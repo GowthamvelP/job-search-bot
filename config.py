@@ -141,10 +141,22 @@ INDIA_REMOTE_PHRASES: list[str] = [
     "all timezones", "any timezone", "flexible timezone", "overlap",
 ]
 
-# Gemini model. gemini-2.0-flash has 1,500 req/day on free tier (vs 25 for 2.5-flash).
-# Falls back to gemini-2.5-flash-lite if primary model quota is exhausted.
-MODEL: str = "gemini-2.0-flash"
-MODEL_FALLBACK: str = "gemini-2.5-flash-lite"
+# Gemini models — cascading fallback list. The bot tries each in order until one works.
+# When a model returns 429 (quota exhausted), the next model in the list is tried.
+# Free-tier daily limits (as of July 2026):
+#   gemini-2.0-flash       — 1,500 req/day (best quota)
+#   gemini-2.0-flash-lite  — 1,500 req/day
+#   gemini-2.5-flash       — 25 req/day
+#   gemini-2.5-flash-lite  — 20 req/day
+#   gemini-2.5-pro         — 5 req/day (slowest, highest quality)
+# Total across all models: ~3,050 calls/day on free tier.
+GEMINI_MODELS: list[str] = [
+    "gemini-2.0-flash",          # 1,500/day — primary
+    "gemini-2.0-flash-lite",     # 1,500/day — fast, lightweight
+    "gemini-2.5-flash",          #    25/day — newer, smarter
+    "gemini-2.5-flash-lite",     #    20/day — budget 2.5
+    "gemini-2.5-pro",            #     5/day — last resort, highest quality
+]
 
 # File paths
 DB_PATH: str = "jobs.db"

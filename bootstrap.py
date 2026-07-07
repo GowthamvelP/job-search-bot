@@ -20,7 +20,7 @@ from google import genai
 
 RESUME_PATH  = "resume.txt"
 PROFILE_PATH = "profile.json"
-MODEL        = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+MODEL        = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 
 # ---------------------------------------------------------------------------

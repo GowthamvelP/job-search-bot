@@ -27,7 +27,7 @@ load_dotenv()
 from google import genai
 
 from config import (
-    GEMINI_API_KEY, MODEL, MODEL_FALLBACK,
+    GEMINI_API_KEY, GEMINI_MODELS,
     RESUME_PATH, SCORE_THRESHOLD,
     EMAIL_TO, EMAIL_FROM, EMAIL_APP_PASSWORD,
     POSTED_WITHIN_DAYS,
@@ -50,49 +50,43 @@ with open(RESUME_PATH, "r") as f:
 # ---------------------------------------------------------------------------
 
 class QuotaExhaustedError(Exception):
-    """Raised when all Gemini model quotas are exhausted for the day."""
+    """Raised when ALL Gemini model quotas are exhausted for the day."""
     pass
 
 
 def _gemini(prompt: str) -> str:
-    """Call Gemini and return the response text.
-    - Retries up to 3 times on 503 (transient server errors).
-    - On 429 (quota exhausted), falls back to MODEL_FALLBACK.
-    - If both models are exhausted, raises QuotaExhaustedError.
+    """Call Gemini, cascading through all models in GEMINI_MODELS.
+    - On 503 (server overload): retry same model up to 3 times.
+    - On 429 (quota exhausted): move to next model in the list.
+    - If all models are exhausted: raise QuotaExhaustedError.
     """
     client = genai.Client(api_key=GEMINI_API_KEY)
-    models_to_try = [MODEL, MODEL_FALLBACK]
 
-    for model in models_to_try:
-        last_exc = None
+    for model in GEMINI_MODELS:
         for attempt in range(3):
             try:
                 response = client.models.generate_content(model=model, contents=prompt)
                 return response.text.strip()
             except Exception as e:
                 err = str(e)
-                if "503" in err or "UNAVAILABLE" in err:
-                    wait = 10 * (attempt + 1)
-                    print(f"  Gemini 503 ({model}), retrying in {wait}s...")
-                    time.sleep(wait)
-                    last_exc = e
-                elif "429" in err or "RESOURCE_EXHAUSTED" in err:
-                    print(f"  Gemini 429: {model} quota exhausted, trying fallback...")
-                    last_exc = e
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    print(f"  [{model}] quota exhausted, trying next model...")
                     break  # try next model
+                elif "503" in err or "UNAVAILABLE" in err:
+                    wait = 10 * (attempt + 1)
+                    print(f"  [{model}] 503, retrying in {wait}s (attempt {attempt + 1}/3)...")
+                    time.sleep(wait)
                 else:
                     raise
         else:
-            # All retries for this model failed with 503
+            # All 3 retries failed with 503 for this model — try next
             continue
         # Broke out of retry loop due to 429 — try next model
         continue
 
-    # Both models exhausted
     raise QuotaExhaustedError(
-        "All Gemini model quotas exhausted for today. "
-        f"Tried: {', '.join(models_to_try)}. "
-        "Run will resume scoring on next execution."
+        f"All Gemini models exhausted for today. Tried: {', '.join(GEMINI_MODELS)}. "
+        "Remaining jobs will be scored on next run after quota resets."
     )
 
 
