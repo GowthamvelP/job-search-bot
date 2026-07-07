@@ -47,6 +47,10 @@ jobs:
         run: |
           git config user.name  "job-search-bot"
           git config user.email "actions@github.com"
-          git add jobs.db
-          git diff --staged --quiet || git commit -m "chore: update seen jobs [skip ci]"
-          git push
+          if [ -f jobs.db ]; then
+            git add -f jobs.db
+            git diff --staged --quiet || git commit -m "chore: update seen jobs [skip ci]"
+            git push
+          else
+            echo "jobs.db not present; nothing to persist"
+          fi
