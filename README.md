@@ -8,6 +8,30 @@ It never auto-submits applications. Every email gives you the apply link and tai
 
 ## How it works
 
+```mermaid
+flowchart TD
+    A[📄 resume.txt] --> B[bootstrap.py]
+    B --> C[profile.json]
+    C --> D[GitHub Actions — Hourly Cron]
+    D --> E[Apify Scraper]
+    E --> |LinkedIn · Indeed · Glassdoor · Naukri| F[Raw Jobs]
+    F --> G[Filters]
+    G --> |Keywords · Date · India/Visa/Remote| H[Filtered Jobs]
+    H --> I[Deduplicate vs jobs.db]
+    I --> J[Hybrid Scoring]
+    J --> |Gemini AI 0-100 + Skill Bonus 0-30| K{Final Score ≥ 70?}
+    K -->|Yes| L[Generate Materials]
+    L --> M[📧 Email CSV Digest]
+    K -->|No| N[Store & Skip]
+
+    style A fill:#e1f5fe
+    style C fill:#f3e5f5
+    style J fill:#fff3e0
+    style M fill:#e8f5e9
+```
+
+### Pipeline detail
+
 ```
 python bootstrap.py        ← run once (or after updating resume.txt)
         │
