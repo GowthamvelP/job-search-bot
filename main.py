@@ -13,6 +13,7 @@ Pipeline:
 import csv
 import io
 import json
+import os
 import smtplib
 import time
 from datetime import datetime, timezone
@@ -431,7 +432,7 @@ def run(flush: bool = False):
 
 if __name__ == "__main__":
     import sys
-    flush_flag = "--flush" in sys.argv
+    flush_flag = "--flush" in sys.argv or os.environ.get("FLUSH_DB", "").lower() in ("1", "true", "yes")
     if flush_flag:
-        print("*** --flush flag detected: resetting database for fresh scoring ***\n")
+        print("*** Flush mode: resetting database for fresh scoring ***\n")
     run(flush=flush_flag)
