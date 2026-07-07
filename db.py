@@ -124,3 +124,13 @@ def get_recent_results(hours=1):
             "visa_sponsorship", "source",
         ]
         return [dict(zip(cols, r)) for r in rows]
+
+
+def flush_db():
+    """Delete all rows from jobs and meta tables. Used to re-score everything fresh."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        job_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        conn.execute("DELETE FROM jobs")
+        conn.execute("DELETE FROM meta")
+        conn.commit()
+    print(f"[db] Flushed {job_count} jobs and all meta timestamps. Next run will re-fetch and re-score everything.")

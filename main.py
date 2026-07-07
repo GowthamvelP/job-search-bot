@@ -32,8 +32,9 @@ from config import (
     EMAIL_TO, EMAIL_FROM, EMAIL_APP_PASSWORD,
     POSTED_WITHIN_DAYS,
     CANDIDATE_LOCATION, CANDIDATE_SUMMARY, CANDIDATE_SENIORITY,
+    ANCHOR_SKILL, PRIMARY_SKILLS,
 )
-from db import init_db, already_seen, save_result
+from db import init_db, already_seen, save_result, flush_db
 from discovery import fetch_new_postings
 
 
@@ -188,22 +189,71 @@ Format with clear headings:
 
 
 # ---------------------------------------------------------------------------
+# Skill alignment bonus (deterministic, no API calls)
+# ---------------------------------------------------------------------------
+
+def _compute_skill_bonus(job: dict) -> int:
+    """Compute a 0-30 bonus based on how well the job matches the candidate's
+    anchor skill and primary skills. This prioritises jobs that explicitly
+    mention the candidate's strongest technology.
+
+    Scoring rules:
+      - anchor_skill found in job TITLE  → +20
+      - anchor_skill found in DESC only  → +10
+      - each primary_skill in TITLE      → +5 (max +10 from these)
+    Total capped at 30.
+    """
+    title = (job.get("title") or "").lower()
+    text = (job.get("text") or "").lower()
+    anchor = ANCHOR_SKILL.lower()
+    bonus = 0
+
+    # Anchor skill (the big one)
+    if anchor in title:
+        bonus += 20
+    elif anchor in text:
+        bonus += 10
+
+    # Also check common abbreviation (e.g., "rails" for "ruby on rails")
+    anchor_short = anchor.split()[-1] if " " in anchor else ""
+    if anchor_short and anchor_short not in anchor[:len(anchor_short)]:
+        if anchor_short in title:
+            bonus = max(bonus, 20)
+        elif anchor_short in text:
+            bonus = max(bonus, 10)
+
+    # Primary skills (supporting)
+    primary_bonus = 0
+    for skill in PRIMARY_SKILLS:
+        if skill.lower() in title:
+            primary_bonus += 5
+            if primary_bonus >= 10:
+                break
+
+    bonus += primary_bonus
+    return min(bonus, 30)
+
+
+# ---------------------------------------------------------------------------
 # CSV generation
 # ---------------------------------------------------------------------------
 
 def _build_csv(results: list[dict]) -> str:
-    """Return a CSV string of all processed jobs, sorted by score descending."""
+    """Return a CSV string of all processed jobs, sorted by final_score descending."""
     output = io.StringIO()
     fieldnames = [
-        "Score", "Title", "Company", "Location", "Remote",
+        "Final Score", "Gemini Score", "Skill Bonus",
+        "Title", "Company", "Location", "Remote",
         "Visa Sponsorship", "Posted Date", "Source", "Status",
         "Apply URL", "Reasoning",
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
     writer.writeheader()
-    for r in sorted(results, key=lambda x: x["score"], reverse=True):
+    for r in sorted(results, key=lambda x: x.get("final_score", x["score"]), reverse=True):
         writer.writerow({
-            "Score":            r["score"],
+            "Final Score":      r.get("final_score", r["score"]),
+            "Gemini Score":     r.get("gemini_score", r["score"]),
+            "Skill Bonus":      r.get("skill_bonus", 0),
             "Title":            r["title"],
             "Company":          r["company"],
             "Location":         r.get("location", ""),
@@ -298,10 +348,14 @@ def send_digest(results: list[dict]) -> None:
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def run():
+def run(flush: bool = False):
     init_db()
 
+    if flush:
+        flush_db()
+
     print(f"Fetching jobs posted in the last {POSTED_WITHIN_DAYS} day(s)...")
+    print(f"  Anchor skill: {ANCHOR_SKILL} (gets +20 title / +10 desc bonus)")
     postings = fetch_new_postings()
     print(f"  {len(postings)} keyword/location-matching postings fetched.")
 
@@ -315,8 +369,14 @@ def run():
             break
         remote_tag = " [remote]" if job.get("is_remote") else ""
         print(f"\nScoring: {job['title']} @ {job['company']}{remote_tag}")
+
+        # Compute deterministic skill bonus first (no API call needed)
+        skill_bonus = _compute_skill_bonus(job)
+        if skill_bonus > 0:
+            print(f"  Skill bonus: +{skill_bonus} ({ANCHOR_SKILL} {'in title' if skill_bonus >= 20 else 'in description'})")
+
         try:
-            score, reasoning = score_job(job)
+            gemini_score, reasoning = score_job(job)
         except QuotaExhaustedError:
             print("\n  *** Gemini daily quota exhausted — stopping scoring for this run.")
             print("  Jobs scored so far will still be emailed. Remaining jobs will be scored next run.")
@@ -327,9 +387,11 @@ def run():
             save_result(job, score=0, status="score_error", reasoning=str(e))
             continue
 
-        print(f"  Score: {score}/100")
+        # Final score = Gemini score + skill alignment bonus (capped at 100)
+        final_score = min(gemini_score + skill_bonus, 100)
+        print(f"  Gemini: {gemini_score}/100 + Skill bonus: +{skill_bonus} = Final: {final_score}/100")
 
-        if score >= SCORE_THRESHOLD:
+        if final_score >= SCORE_THRESHOLD:
             print("  Strong match — generating tailored materials...")
             try:
                 materials = generate_materials(job)
@@ -342,19 +404,22 @@ def run():
             materials = ""
             status = "below_threshold"
 
-        save_result(job, score=score, status=status,
+        save_result(job, score=final_score, status=status,
                     reasoning=reasoning, materials=materials)
         processed.append({
             **job,
-            "score":     score,
-            "status":    status,
-            "reasoning": reasoning,
-            "materials": materials,
+            "score":        final_score,
+            "final_score":  final_score,
+            "gemini_score": gemini_score,
+            "skill_bonus":  skill_bonus,
+            "status":       status,
+            "reasoning":    reasoning,
+            "materials":    materials,
         })
 
     print(f"\nRun complete. Processed {len(processed)} new job(s).")
 
-    processed.sort(key=lambda r: r["score"], reverse=True)
+    processed.sort(key=lambda r: r["final_score"], reverse=True)
     if processed:
         try:
             send_digest(processed)
@@ -365,4 +430,8 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    import sys
+    flush_flag = "--flush" in sys.argv
+    if flush_flag:
+        print("*** --flush flag detected: resetting database for fresh scoring ***\n")
+    run(flush=flush_flag)

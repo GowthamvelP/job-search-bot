@@ -44,6 +44,15 @@ def _p(key, fallback):
 # Persona settings (driven by profile.json, fallback to sensible defaults)
 # ---------------------------------------------------------------------------
 
+# Anchor skill — the candidate's single defining technology.
+# Gets the highest skill bonus (+20 in title, +10 in description).
+ANCHOR_SKILL: str = _p("anchor_skill", "Ruby on Rails")
+
+# Primary skills (excluding anchor) — get smaller bonuses (+5 each in title).
+PRIMARY_SKILLS: list[str] = _p("primary_skills", [
+    "AWS", "Backend Architecture", "Serverless", "Node.js",
+])
+
 # Search queries sent to JSearch (Google for Jobs aggregator).
 # Each query = 1 API request per run. Keep short — see JSEARCH_INTERVAL_HOURS.
 JSEARCH_QUERIES: list[str] = _p("search_terms", [
