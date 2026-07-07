@@ -27,8 +27,15 @@ jobs:
       # To generate the secret value: run `python bootstrap.py` locally, then
       # add the contents of profile.json as a secret named PROFILE_JSON.
       - name: Write profile.json
-        if: ${{ secrets.PROFILE_JSON != '' }}
-        run: echo '${{ secrets.PROFILE_JSON }}' > profile.json
+        env:
+          PROFILE_JSON: ${{ secrets.PROFILE_JSON }}
+        run: |
+          if [ -n "$PROFILE_JSON" ]; then
+            echo "$PROFILE_JSON" > profile.json
+            echo "profile.json written from secret"
+          else
+            echo "PROFILE_JSON secret not set — using config.py fallbacks"
+          fi
 
       - name: Run job search bot
         env:
