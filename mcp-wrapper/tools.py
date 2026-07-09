@@ -1,130 +1,38 @@
 # mcp-wrapper/tools.py
 #
-# Rationale: Same-repo today. Each tool is a thin async wrapper around the bot's
-# existing synchronous functions. No business logic lives here — just argument
-# parsing, bot function invocation, and result formatting.
-
-"""
-MCP tool definitions and handlers for the job-search-bot.
-
-Each tool maps directly to a bot capability:
-  - search_jobs   → discovery.fetch_new_postings()
-  - score_job     → main.score_job() + main._compute_skill_bonus()
-  - run_pipeline  → main.run()
-  - flush_db      → db.flush_db()
-  - bootstrap     → bootstrap.run()
-"""
+# Complete MCP tool set for job-search-bot.
+# Tier 1: Real tools wrapping bot functions (10)
+# Tier 2: Wrapper-local tools with own storage (5)
+# Tier 3: Stubs with structure only (10)
+# Tier 4: Skipped — contradicts bot design (not present)
 
 import json
+import os
+import sys
 import asyncio
-from functools import partial
+import csv
+import io
+import sqlite3
+from contextlib import closing
 
-from mcp.types import Tool
-
-# Bot imports (via the sys.path setup in server.py)
+# Bot imports (via sys.path setup in server.py)
 import bot
 from bot import main as bot_main
 from bot import discovery, db, config
+from bot import bootstrap as bot_bootstrap
 
-# ---------------------------------------------------------------------------
-# Tool definitions (exposed to MCP clients)
-# ---------------------------------------------------------------------------
-
-TOOL_DEFINITIONS = [
-    Tool(
-        name="search_jobs",
-        description=(
-            "Fetch and filter job postings from all configured sources "
-            "(Apify: LinkedIn, Indeed, Glassdoor, Naukri + Greenhouse/Lever). "
-            "Returns jobs matching keywords, date range, and location/visa filters. "
-            "Does NOT score them — use score_job or run_pipeline for that."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "posted_within_days": {
-                    "type": "integer",
-                    "description": "Only include jobs posted in the last N days. Defaults to config value.",
-                },
-            },
-            "required": [],
-        },
-    ),
-    Tool(
-        name="score_job",
-        description=(
-            "Score a single job posting against the candidate's resume using hybrid scoring "
-            "(Gemini AI semantic fit 0-100 + deterministic skill-alignment bonus 0-30). "
-            "Returns the final score, Gemini score, skill bonus, and reasoning."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Job title"},
-                "company": {"type": "string", "description": "Company name"},
-                "location": {"type": "string", "description": "Job location"},
-                "url": {"type": "string", "description": "Job URL"},
-                "text": {"type": "string", "description": "Job description text"},
-                "is_remote": {"type": "boolean", "description": "Whether the job is remote"},
-            },
-            "required": ["title", "company", "url", "text"],
-        },
-    ),
-    Tool(
-        name="run_pipeline",
-        description=(
-            "Execute the full job search pipeline: fetch → filter → score → "
-            "generate materials for strong matches → email CSV digest. "
-            "This is equivalent to running `python main.py`."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "flush": {
-                    "type": "boolean",
-                    "description": "Reset the database before running (re-score everything fresh). Default: false.",
-                },
-            },
-            "required": [],
-        },
-    ),
-    Tool(
-        name="flush_db",
-        description=(
-            "Reset the jobs database — deletes all scored jobs and rate-limit timestamps. "
-            "The next pipeline run will re-fetch and re-score everything from scratch."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    ),
-    Tool(
-        name="bootstrap",
-        description=(
-            "Regenerate profile.json from resume.txt using Gemini. Extracts anchor_skill, "
-            "primary_skills, search_terms, keywords, location, and seniority. "
-            "Run this after updating the resume."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    ),
-]
+# Wrapper-local storage
+import storage
 
 
-# ---------------------------------------------------------------------------
-# Tool handlers
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# TIER 1 — Real Tools (wrap existing bot functions)
+# ===========================================================================
 
 async def tool_search_jobs(arguments: dict) -> str:
-    """Fetch and filter jobs from all sources."""
+    """Fetch and filter jobs from all configured sources."""
     db.init_db()
 
-    # Temporarily override POSTED_WITHIN_DAYS if provided
     original = config.POSTED_WITHIN_DAYS
     if "posted_within_days" in arguments:
         config.POSTED_WITHIN_DAYS = arguments["posted_within_days"]
@@ -134,10 +42,10 @@ async def tool_search_jobs(arguments: dict) -> str:
     finally:
         config.POSTED_WITHIN_DAYS = original
 
-    # Format results
     results = []
-    for j in jobs[:50]:  # cap at 50 for response size
+    for j in jobs[:50]:
         results.append({
+            "id": j.get("id", ""),
             "title": j["title"],
             "company": j["company"],
             "location": j.get("location", ""),
@@ -148,19 +56,15 @@ async def tool_search_jobs(arguments: dict) -> str:
             "source": j.get("source", ""),
         })
 
-    return json.dumps({
-        "total_fetched": len(jobs),
-        "returned": len(results),
-        "jobs": results,
-    }, indent=2)
+    return json.dumps({"total_fetched": len(jobs), "returned": len(results), "jobs": results}, indent=2)
 
 
 async def tool_score_job(arguments: dict) -> str:
-    """Score a single job against the resume."""
+    """Score a single job using hybrid scoring (Gemini + skill bonus)."""
     db.init_db()
 
     job = {
-        "id": f"mcp_{hash(arguments['url'])}",
+        "id": f"mcp_{abs(hash(arguments['url']))}",
         "title": arguments["title"],
         "company": arguments["company"],
         "location": arguments.get("location", ""),
@@ -177,13 +81,9 @@ async def tool_score_job(arguments: dict) -> str:
     try:
         gemini_score, reasoning = await asyncio.to_thread(bot_main.score_job, job)
     except bot_main.QuotaExhaustedError:
-        return json.dumps({
-            "error": "All Gemini model quotas exhausted for today. Try again after midnight Pacific.",
-            "skill_bonus": skill_bonus,
-        })
+        return json.dumps({"error": "All Gemini model quotas exhausted. Try after midnight Pacific.", "skill_bonus": skill_bonus})
 
     final_score = min(gemini_score + skill_bonus, 100)
-
     return json.dumps({
         "final_score": final_score,
         "gemini_score": gemini_score,
@@ -194,46 +94,369 @@ async def tool_score_job(arguments: dict) -> str:
 
 
 async def tool_run_pipeline(arguments: dict) -> str:
-    """Run the full pipeline."""
+    """Execute the full pipeline: fetch → score → email."""
     flush = arguments.get("flush", False)
 
-    # Capture stdout for the response
-    import io
+    import io as _io
     from contextlib import redirect_stdout
-
-    buffer = io.StringIO()
+    buffer = _io.StringIO()
     try:
         with redirect_stdout(buffer):
             await asyncio.to_thread(bot_main.run, flush=flush)
-        output = buffer.getvalue()
+        return json.dumps({"status": "completed", "output": buffer.getvalue()}, indent=2)
     except Exception as e:
-        output = f"Pipeline failed: {e}"
-
-    return json.dumps({
-        "status": "completed",
-        "output": output,
-    }, indent=2)
+        return json.dumps({"status": "error", "message": str(e), "partial_output": buffer.getvalue()})
 
 
 async def tool_flush_db(arguments: dict) -> str:
-    """Flush the database."""
+    """Reset the jobs database for fresh scoring."""
     db.init_db()
     await asyncio.to_thread(db.flush_db)
     return json.dumps({"status": "flushed", "message": "Database reset. Next run will re-fetch and re-score everything."})
 
 
 async def tool_bootstrap(arguments: dict) -> str:
-    """Regenerate profile.json from resume."""
-    from bot import bootstrap as bot_bootstrap
-
-    import io
+    """Regenerate profile.json from resume.txt."""
+    import io as _io
     from contextlib import redirect_stdout
-
-    buffer = io.StringIO()
+    buffer = _io.StringIO()
     try:
         with redirect_stdout(buffer):
             await asyncio.to_thread(bot_bootstrap.run)
-        output = buffer.getvalue()
-        return json.dumps({"status": "completed", "output": output})
+        return json.dumps({"status": "completed", "output": buffer.getvalue()})
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})
+
+
+async def tool_generate_cover_letter(arguments: dict) -> str:
+    """Generate tailored resume bullets and cover letter for a specific job."""
+    job = {
+        "title": arguments["title"],
+        "company": arguments["company"],
+        "location": arguments.get("location", ""),
+        "url": arguments.get("url", ""),
+        "text": arguments["text"],
+    }
+
+    try:
+        materials = await asyncio.to_thread(bot_main.generate_materials, job)
+        return json.dumps({"status": "completed", "materials": materials}, indent=2)
+    except bot_main.QuotaExhaustedError:
+        return json.dumps({"status": "error", "message": "Gemini quota exhausted. Try after midnight Pacific."})
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+async def tool_get_platforms(arguments: dict) -> str:
+    """Return configured job sources and boards."""
+    return json.dumps({
+        "apify_boards": config.APIFY_JOB_BOARDS,
+        "apify_search_terms": config.APIFY_SEARCH_TERMS,
+        "greenhouse_companies": config.GREENHOUSE_COMPANIES,
+        "lever_companies": config.LEVER_COMPANIES,
+        "jsearch_enabled": config.JSEARCH_ENABLED,
+        "anchor_skill": config.ANCHOR_SKILL,
+        "posted_within_days": config.POSTED_WITHIN_DAYS,
+    }, indent=2)
+
+
+async def tool_get_analytics(arguments: dict) -> str:
+    """Return scoring analytics from jobs.db."""
+    db.init_db()
+    hours = arguments.get("hours", 168)  # default: last 7 days
+
+    with closing(sqlite3.connect(config.DB_PATH)) as conn:
+        total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        strong = conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'strong_match'").fetchone()[0]
+        below = conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'below_threshold'").fetchone()[0]
+        errors = conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'score_error'").fetchone()[0]
+        avg_score = conn.execute("SELECT AVG(score) FROM jobs WHERE score > 0").fetchone()[0]
+
+        by_source = conn.execute(
+            "SELECT source, COUNT(*), AVG(score) FROM jobs GROUP BY source ORDER BY COUNT(*) DESC"
+        ).fetchall()
+
+        recent = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE seen_at >= datetime('now', ?)", (f"-{hours} hours",)
+        ).fetchone()[0]
+
+    return json.dumps({
+        "total_jobs_scored": total,
+        "strong_matches": strong,
+        "below_threshold": below,
+        "score_errors": errors,
+        "average_score": round(avg_score, 1) if avg_score else 0,
+        "jobs_last_period": recent,
+        "period_hours": hours,
+        "by_source": [{"source": r[0] or "unknown", "count": r[1], "avg_score": round(r[2] or 0, 1)} for r in by_source],
+    }, indent=2)
+
+
+async def tool_get_saved_jobs(arguments: dict) -> str:
+    """Return previously scored jobs from the database."""
+    db.init_db()
+    hours = arguments.get("hours", 24)
+    min_score = arguments.get("min_score", 0)
+
+    with closing(sqlite3.connect(config.DB_PATH)) as conn:
+        rows = conn.execute("""
+            SELECT job_id, title, company, location, url, score, status,
+                   reasoning, posted_date, is_remote, visa_sponsorship, source
+            FROM jobs
+            WHERE seen_at >= datetime('now', ?) AND score >= ?
+            ORDER BY score DESC
+            LIMIT 50
+        """, (f"-{hours} hours", min_score)).fetchall()
+
+    cols = ["job_id", "title", "company", "location", "url", "score", "status",
+            "reasoning", "posted_date", "is_remote", "visa_sponsorship", "source"]
+    jobs = [dict(zip(cols, r)) for r in rows]
+
+    return json.dumps({"count": len(jobs), "jobs": jobs}, indent=2)
+
+
+async def tool_run_health_check(arguments: dict) -> str:
+    """Validate that all bot dependencies are configured and accessible."""
+    checks = {}
+
+    # API keys
+    checks["gemini_api_key"] = "set" if config.GEMINI_API_KEY else "MISSING"
+    checks["apify_api_key"] = "set" if config.APIFY_API_KEY else "MISSING"
+    checks["gmail_address"] = "set" if config.EMAIL_FROM else "MISSING"
+    checks["gmail_app_password"] = "set" if config.EMAIL_APP_PASSWORD else "MISSING"
+
+    # Resume file
+    checks["resume_file"] = "exists" if os.path.exists(config.RESUME_PATH) else "MISSING"
+
+    # Profile
+    checks["profile_json"] = "loaded" if config._profile else "MISSING (using fallbacks)"
+    checks["anchor_skill"] = config.ANCHOR_SKILL
+
+    # DB writable
+    try:
+        db.init_db()
+        db.set_meta("health_check", "ok")
+        checks["database"] = "writable"
+    except Exception as e:
+        checks["database"] = f"ERROR: {e}"
+
+    # Overall
+    all_ok = all(
+        v not in ("MISSING", ) and not v.startswith("ERROR")
+        for v in checks.values()
+    )
+    checks["overall"] = "healthy" if all_ok else "issues_detected"
+
+    return json.dumps(checks, indent=2)
+
+
+# ===========================================================================
+# TIER 2 — Wrapper-local Tools (own SQLite storage)
+# ===========================================================================
+
+async def tool_save_job(arguments: dict) -> str:
+    """Bookmark a job for later reference."""
+    job_id = arguments["job_id"]
+    title = arguments.get("title", "")
+    company = arguments.get("company", "")
+    url = arguments.get("url", "")
+    notes = arguments.get("notes", "")
+
+    # Try to fill from jobs.db if not provided
+    if not title or not company:
+        db.init_db()
+        with closing(sqlite3.connect(config.DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT title, company, url FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row:
+                title = title or row[0]
+                company = company or row[1]
+                url = url or row[2]
+
+    is_new = storage.save_bookmark(job_id, title, company, url, notes)
+    return json.dumps({
+        "status": "saved" if is_new else "already_bookmarked",
+        "job_id": job_id,
+        "title": title,
+        "company": company,
+    })
+
+
+async def tool_unsave_job(arguments: dict) -> str:
+    """Remove a job from bookmarks."""
+    removed = storage.remove_bookmark(arguments["job_id"])
+    return json.dumps({
+        "status": "removed" if removed else "not_found",
+        "job_id": arguments["job_id"],
+    })
+
+
+async def tool_get_job_details(arguments: dict) -> str:
+    """Get full details of a scored job from the database."""
+    db.init_db()
+    job_id = arguments.get("job_id", "")
+    url = arguments.get("url", "")
+
+    with closing(sqlite3.connect(config.DB_PATH)) as conn:
+        if job_id:
+            row = conn.execute("""
+                SELECT job_id, title, company, location, url, score, status,
+                       reasoning, materials, posted_date, is_remote, visa_sponsorship, source, seen_at
+                FROM jobs WHERE job_id = ?
+            """, (job_id,)).fetchone()
+        elif url:
+            row = conn.execute("""
+                SELECT job_id, title, company, location, url, score, status,
+                       reasoning, materials, posted_date, is_remote, visa_sponsorship, source, seen_at
+                FROM jobs WHERE url = ?
+            """, (url,)).fetchone()
+        else:
+            return json.dumps({"error": "Provide either job_id or url"})
+
+    if not row:
+        return json.dumps({"error": "Job not found in database"})
+
+    cols = ["job_id", "title", "company", "location", "url", "score", "status",
+            "reasoning", "materials", "posted_date", "is_remote", "visa_sponsorship", "source", "seen_at"]
+    return json.dumps(dict(zip(cols, row)), indent=2)
+
+
+async def tool_update_profile(arguments: dict) -> str:
+    """Update a field in profile.json. Requires bot restart to take effect."""
+    profile_path = "profile.json"
+    if not os.path.exists(profile_path):
+        return json.dumps({"error": "profile.json not found. Run bootstrap first."})
+
+    with open(profile_path, "r") as f:
+        profile = json.load(f)
+
+    key = arguments["key"]
+    value = arguments["value"]
+
+    # Parse value as JSON if it looks like a list/dict
+    if isinstance(value, str) and (value.startswith("[") or value.startswith("{")):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+
+    old_value = profile.get(key, "<not set>")
+    profile[key] = value
+
+    with open(profile_path, "w") as f:
+        json.dump(profile, f, indent=2)
+
+    return json.dumps({
+        "status": "updated",
+        "key": key,
+        "old_value": old_value,
+        "new_value": value,
+        "note": "Restart the bot or re-run pipeline for changes to take effect.",
+    }, indent=2)
+
+
+async def tool_export_data(arguments: dict) -> str:
+    """Export all scored jobs from jobs.db as JSON."""
+    db.init_db()
+    fmt = arguments.get("format", "json")
+
+    with closing(sqlite3.connect(config.DB_PATH)) as conn:
+        rows = conn.execute("""
+            SELECT job_id, title, company, location, url, score, status,
+                   reasoning, posted_date, is_remote, visa_sponsorship, source, seen_at
+            FROM jobs ORDER BY score DESC
+        """).fetchall()
+
+    cols = ["job_id", "title", "company", "location", "url", "score", "status",
+            "reasoning", "posted_date", "is_remote", "visa_sponsorship", "source", "seen_at"]
+    jobs = [dict(zip(cols, r)) for r in rows]
+
+    if fmt == "csv":
+        output = io.StringIO()
+        if jobs:
+            writer = csv.DictWriter(output, fieldnames=cols)
+            writer.writeheader()
+            writer.writerows(jobs)
+        return json.dumps({"format": "csv", "count": len(jobs), "data": output.getvalue()})
+    else:
+        return json.dumps({"format": "json", "count": len(jobs), "jobs": jobs}, indent=2)
+
+
+# ===========================================================================
+# TIER 3 — Stubs (structure only, return pending)
+# ===========================================================================
+
+def _stub(tool_name: str) -> str:
+    return json.dumps({"status": "pending", "tool": tool_name, "message": f"'{tool_name}' is not yet implemented. It will be available in a future update."})
+
+
+async def tool_add_interview(arguments: dict) -> str:
+    """Add an interview to your pipeline tracker."""
+    job_id = arguments.get("job_id", "")
+    company = arguments["company"]
+    role = arguments.get("role", "")
+    dt = arguments["datetime"]
+    notes = arguments.get("notes", "")
+
+    interview_id = storage.add_interview(job_id, company, role, dt, notes)
+    return json.dumps({"status": "added", "interview_id": interview_id, "company": company, "datetime": dt})
+
+
+async def tool_get_upcoming_interviews(arguments: dict) -> str:
+    """Get upcoming interviews."""
+    interviews = storage.get_interviews(upcoming_only=True)
+    return json.dumps({"count": len(interviews), "interviews": interviews}, indent=2)
+
+
+async def tool_set_reminder(arguments: dict) -> str:
+    """Set a follow-up reminder."""
+    message = arguments["message"]
+    due_at = arguments["due_at"]
+    reminder_id = storage.add_reminder(message, due_at)
+    return json.dumps({"status": "set", "reminder_id": reminder_id, "message": message, "due_at": due_at})
+
+
+async def tool_get_reminders(arguments: dict) -> str:
+    """Get active reminders."""
+    reminders = storage.get_reminders(include_done=arguments.get("include_done", False))
+    return json.dumps({"count": len(reminders), "reminders": reminders}, indent=2)
+
+
+async def tool_dismiss_reminder(arguments: dict) -> str:
+    """Mark a reminder as done."""
+    dismissed = storage.dismiss_reminder(arguments["reminder_id"])
+    return json.dumps({"status": "dismissed" if dismissed else "not_found", "reminder_id": arguments["reminder_id"]})
+
+
+async def tool_compare_jobs(arguments: dict) -> str:
+    """Compare two or more jobs side by side."""
+    return _stub("compare_jobs")
+
+
+async def tool_get_company_info(arguments: dict) -> str:
+    """Get company information and enrichment data."""
+    return _stub("get_company_info")
+
+
+async def tool_pause_bot(arguments: dict) -> str:
+    """Pause the hourly job search cron."""
+    return _stub("pause_bot")
+
+
+async def tool_resume_bot(arguments: dict) -> str:
+    """Resume the hourly job search cron."""
+    return _stub("resume_bot")
+
+
+async def tool_get_bot_status(arguments: dict) -> str:
+    """Get current bot status (running, paused, last run time)."""
+    # Partially implementable — read last run from meta
+    db.init_db()
+    last_apify = db.get_meta("apify_last_run") or "never"
+    return json.dumps({
+        "status": "running",
+        "last_apify_run": last_apify,
+        "interval_hours": config.APIFY_INTERVAL_HOURS,
+        "note": "Pause/resume functionality pending — requires GitHub Actions API integration.",
+    }, indent=2)
