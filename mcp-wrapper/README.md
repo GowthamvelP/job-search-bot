@@ -118,7 +118,7 @@ AI Agent (Claude / Kiro / Cursor)
 | `get_reminders` | Get active reminders | ✅ Live |
 | `dismiss_reminder` | Mark a reminder as done | ✅ Live |
 | `get_bot_status` | Get last run time and configuration | ✅ Partial |
-| `compare_jobs` | Compare jobs side by side | 🔜 Stub |
+| `compare_jobs` | Compare 2-5 jobs side by side with best match recommendation | ✅ Live |
 | `get_company_info` | Company enrichment data | 🔜 Stub |
 | `pause_bot` | Pause the hourly cron | 🔜 Stub |
 | `resume_bot` | Resume the hourly cron | 🔜 Stub |
@@ -210,3 +210,4 @@ If this wrapper matures into a standalone project with its own release cadence o
 | `update_profile` not reflecting | Changes require restart | Restart the MCP server or re-run `bootstrap()` |
 | Server crashes with no visible error | Unhandled exception | Check `mcp-wrapper/server.log` for the full traceback |
 | Tools return `"status": "pending"` | Stub tool (not yet implemented) | These are Tier 3 stubs — functionality coming in a future update |
+| `export_data` returns truncated data | MCP message size limit hit | Use `format="csv"` for smaller payload, or set `return_file_path=true` to write to disk |

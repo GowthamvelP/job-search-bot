@@ -122,9 +122,9 @@ async def update_profile(key: str, value: str) -> str:
     return await tools.tool_update_profile({"key": key, "value": value})
 
 @mcp.tool()
-async def export_data(format: str = "json") -> str:
-    """Export all scored jobs from the database. format must be 'json' or 'csv'; unknown values default to 'json'."""
-    return await tools.tool_export_data({"format": format})
+async def export_data(format: str = "json", return_file_path: bool = False) -> str:
+    """Export all scored jobs from the database. format must be 'json' or 'csv'; unknown values default to 'json'. Set return_file_path=true to write to disk instead of returning inline."""
+    return await tools.tool_export_data({"format": format, "return_file_path": return_file_path})
 
 # ---------------------------------------------------------------------------
 # TIER 3 — Implemented (wrapper-local) + Stubs
@@ -157,7 +157,7 @@ async def dismiss_reminder(reminder_id: int) -> str:
 
 @mcp.tool()
 async def compare_jobs(job_ids: list[str] = []) -> str:
-    """[Not yet implemented] Compare two or more jobs side by side."""
+    """Compare two or more jobs side by side. Provide 2-5 job_ids."""
     return await tools.tool_compare_jobs({"job_ids": job_ids})
 
 @mcp.tool()

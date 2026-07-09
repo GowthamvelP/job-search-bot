@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "job-search": {
+      "command": "/Users/gowthamvelpalanivel/Downloads/Projects/job-search/.venv311/bin/python",
+      "args": ["/Users/gowthamvelpalanivel/Downloads/Projects/job-search/mcp-wrapper/server.py"],
+      "cwd": "/Users/gowthamvelpalanivel/Downloads/Projects/job-search"
+    }
+  }
+}
