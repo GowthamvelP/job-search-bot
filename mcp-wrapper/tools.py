@@ -412,6 +412,8 @@ async def tool_export_data(arguments: dict) -> str:
     if fmt not in ALLOWED_EXPORT_FORMATS:
         fmt = "json"
 
+    return_file_path = arguments.get("return_file_path", False)
+
     with closing(sqlite3.connect(config.DB_PATH)) as conn:
         rows = conn.execute("""
             SELECT job_id, title, company, location, url, score, status,
@@ -423,15 +425,36 @@ async def tool_export_data(arguments: dict) -> str:
             "reasoning", "posted_date", "is_remote", "visa_sponsorship", "source", "seen_at"]
     jobs = [dict(zip(cols, r)) for r in rows]
 
-    if fmt == "csv":
-        output = io.StringIO()
-        if jobs:
-            writer = csv.DictWriter(output, fieldnames=cols)
-            writer.writeheader()
-            writer.writerows(jobs)
-        return json.dumps({"format": "csv", "count": len(jobs), "data": output.getvalue()})
+    if return_file_path:
+        # Write to mcp-wrapper/exports/ directory
+        exports_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exports")
+        os.makedirs(exports_dir, exist_ok=True)
+        from datetime import datetime, timezone
+        timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"jobs_export_{timestamp}.{fmt}"
+        filepath = os.path.join(exports_dir, filename)
+
+        if fmt == "csv":
+            with open(filepath, "w", newline="") as f:
+                if jobs:
+                    writer = csv.DictWriter(f, fieldnames=cols)
+                    writer.writeheader()
+                    writer.writerows(jobs)
+        else:
+            with open(filepath, "w") as f:
+                json.dump({"count": len(jobs), "jobs": jobs}, f, indent=2)
+
+        return json.dumps({"format": fmt, "count": len(jobs), "file_path": filepath})
     else:
-        return json.dumps({"format": "json", "count": len(jobs), "jobs": jobs}, indent=2)
+        if fmt == "csv":
+            output = io.StringIO()
+            if jobs:
+                writer = csv.DictWriter(output, fieldnames=cols)
+                writer.writeheader()
+                writer.writerows(jobs)
+            return json.dumps({"format": "csv", "count": len(jobs), "data": output.getvalue()})
+        else:
+            return json.dumps({"format": "json", "count": len(jobs), "jobs": jobs}, indent=2)
 
 
 # ===========================================================================
@@ -487,7 +510,49 @@ async def tool_dismiss_reminder(arguments: dict) -> str:
 
 async def tool_compare_jobs(arguments: dict) -> str:
     """Compare two or more jobs side by side."""
-    return _stub("compare_jobs")
+    job_ids = arguments.get("job_ids", [])
+    if not job_ids or len(job_ids) < 2:
+        return json.dumps({"error": "Provide at least 2 job_ids to compare."})
+    if len(job_ids) > 5:
+        return json.dumps({"error": "Maximum 5 jobs can be compared at once."})
+
+    db.init_db()
+    jobs = []
+    not_found = []
+
+    with closing(sqlite3.connect(config.DB_PATH)) as conn:
+        for jid in job_ids:
+            row = conn.execute("""
+                SELECT job_id, title, company, location, score, status,
+                       reasoning, posted_date, is_remote, visa_sponsorship, source
+                FROM jobs WHERE job_id = ?
+            """, (jid,)).fetchone()
+            if row:
+                cols = ["job_id", "title", "company", "location", "score", "status",
+                        "reasoning", "posted_date", "is_remote", "visa_sponsorship", "source"]
+                jobs.append(dict(zip(cols, row)))
+            else:
+                not_found.append(jid)
+
+    if not jobs:
+        return json.dumps({"error": "None of the provided job_ids were found in the database.", "not_found": not_found})
+
+    # Find best match
+    best = max(jobs, key=lambda j: j.get("score", 0))
+
+    result = {
+        "compared": len(jobs),
+        "not_found": not_found,
+        "jobs": jobs,
+        "best_match": {
+            "job_id": best["job_id"],
+            "title": best["title"],
+            "company": best["company"],
+            "score": best["score"],
+            "reason": f"Highest score ({best['score']}/100): {best.get('reasoning', 'N/A')}"
+        },
+    }
+    return json.dumps(result, indent=2)
 
 
 async def tool_get_company_info(arguments: dict) -> str:

@@ -19,3 +19,4 @@ mcp-wrapper/server.log
 # Log files from CI
 logs_*/
 _test_*.py
+mcp-wrapper/exports/
