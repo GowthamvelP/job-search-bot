@@ -166,6 +166,13 @@ Or set `FLUSH_DB=true` in your `.env` for a one-time flush.
 
 The MCP wrapper exposes the bot's pipeline as tools for AI agents (Claude, Kiro, etc.).
 
+### Design principles
+
+- **No auto-apply** — The bot never submits job applications. Every tool surfaces information; the human decides and acts.
+- **Wrapper-only storage** — MCP-specific data (bookmarks, interviews, reminders) lives in `wrapper.db`, completely separate from the bot's `jobs.db`.
+- **Local-only stdio** — The MCP server communicates via stdin/stdout. No network ports, no remote access.
+- **No credential exposure** — `run_health_check` reports "set"/"MISSING" but never returns actual API key values.
+
 ### Install
 
 ```bash
@@ -173,6 +180,8 @@ pip install -e "./mcp-wrapper"
 ```
 
 ### Configure your MCP client
+
+**Kiro / VS Code** (`.kiro/settings/mcp.json`):
 
 ```json
 {
@@ -186,17 +195,69 @@ pip install -e "./mcp-wrapper"
 }
 ```
 
-### Available tools
+**Claude Desktop** (`claude_desktop_config.json`):
 
-| Tool | Description |
-|------|-------------|
-| `search_jobs` | Fetch and filter jobs from all sources |
-| `score_job` | Score a single job with hybrid scoring (Gemini + skill bonus) |
-| `run_pipeline` | Full pipeline: fetch → score → email digest |
-| `flush_db` | Reset database for fresh scoring |
-| `bootstrap` | Regenerate profile.json from resume |
+```json
+{
+  "mcpServers": {
+    "job-search": {
+      "command": "python",
+      "args": ["/path/to/job-search-bot/mcp-wrapper/server.py"],
+      "env": {
+        "GEMINI_API_KEY": "your-key",
+        "APIFY_API_KEY": "your-key",
+        "GMAIL_ADDRESS": "your@gmail.com",
+        "GMAIL_APP_PASSWORD": "your-app-password"
+      }
+    }
+  }
+}
+```
 
-See [mcp-wrapper/README.md](mcp-wrapper/README.md) for full documentation.
+### Tool reference (all 25 tools)
+
+#### Tier 1 — Live (wraps existing bot functions)
+
+| Tool | Status | Description |
+|------|--------|-------------|
+| `search_jobs` | ✅ Live | Fetch and filter jobs from Apify + Greenhouse/Lever |
+| `score_job` | ✅ Live | Score a single job with hybrid scoring (Gemini + skill bonus) |
+| `run_pipeline` | ✅ Live | Full pipeline: fetch → score → email CSV digest |
+| `flush_db` | ✅ Live | Reset database for fresh scoring |
+| `bootstrap` | ✅ Live | Regenerate profile.json from resume.txt |
+| `generate_cover_letter` | ✅ Live | Generate tailored resume bullets + cover letter |
+| `get_platforms` | ✅ Live | Show configured job boards and search terms |
+| `get_analytics` | ✅ Live | Scoring analytics: totals, averages, by source |
+| `get_saved_jobs` | ✅ Live | Retrieve scored jobs filtered by time and score |
+| `run_health_check` | ✅ Live | Validate API keys, files, DB connectivity |
+
+#### Tier 2 — Live (wrapper-local storage)
+
+| Tool | Status | Description |
+|------|--------|-------------|
+| `save_job` | ✅ Live | Bookmark a job for later reference |
+| `unsave_job` | ✅ Live | Remove a job from bookmarks |
+| `get_job_details` | ✅ Live | Get full details of a scored job by ID or URL |
+| `update_profile` | ✅ Live | Update a field in profile.json (whitelisted keys only) |
+| `export_data` | ✅ Live | Export all scored jobs as JSON or CSV |
+
+#### Tier 3 — Implemented / Stubs
+
+| Tool | Status | Description |
+|------|--------|-------------|
+| `add_interview` | ✅ Live | Track an upcoming interview |
+| `get_upcoming_interviews` | ✅ Live | List upcoming interviews |
+| `set_reminder` | ✅ Live | Set a follow-up reminder |
+| `get_reminders` | ✅ Live | Get active reminders |
+| `dismiss_reminder` | ✅ Live | Mark a reminder as done |
+| `get_bot_status` | ✅ Partial | Get last run time and configuration |
+| `compare_jobs` | 🔜 Stub | Compare jobs side by side |
+| `get_company_info` | 🔜 Stub | Company enrichment data |
+| `pause_bot` | 🔜 Stub | Pause the hourly cron |
+| `resume_bot` | 🔜 Stub | Resume the hourly cron |
+
+See [mcp-wrapper/TOOLS.md](mcp-wrapper/TOOLS.md) for full parameter docs and examples.
+See [mcp-wrapper/SECURITY.md](mcp-wrapper/SECURITY.md) for the security audit.
 
 ---
 

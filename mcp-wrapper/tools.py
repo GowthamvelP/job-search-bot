@@ -26,6 +26,32 @@ import storage
 
 
 # ===========================================================================
+# SECURITY — Input validation helpers
+# ===========================================================================
+
+ALLOWED_PROFILE_KEYS = {
+    "anchor_skill", "primary_skills", "secondary_skills", "target_titles",
+    "search_terms", "keywords", "location", "country", "seniority", "email",
+}
+
+ALLOWED_EXPORT_FORMATS = {"json", "csv"}
+
+
+def _clamp(value: int | float, lo: int | float, hi: int | float) -> int | float:
+    """Clamp a numeric value to [lo, hi]."""
+    return max(lo, min(hi, value))
+
+
+def _require_non_empty(arguments: dict, keys: list[str]) -> str | None:
+    """Return an error JSON string if any key in arguments is empty after strip, else None."""
+    for key in keys:
+        val = arguments.get(key, "")
+        if not isinstance(val, str) or not val.strip():
+            return json.dumps({"error": f"'{key}' is required and must be a non-empty string."})
+    return None
+
+
+# ===========================================================================
 # TIER 1 — Real Tools (wrap existing bot functions)
 # ===========================================================================
 
@@ -35,7 +61,7 @@ async def tool_search_jobs(arguments: dict) -> str:
 
     original = config.POSTED_WITHIN_DAYS
     if "posted_within_days" in arguments:
-        config.POSTED_WITHIN_DAYS = arguments["posted_within_days"]
+        config.POSTED_WITHIN_DAYS = int(_clamp(arguments["posted_within_days"], 1, 90))
 
     try:
         jobs = await asyncio.to_thread(discovery.fetch_new_postings)
@@ -61,6 +87,11 @@ async def tool_search_jobs(arguments: dict) -> str:
 
 async def tool_score_job(arguments: dict) -> str:
     """Score a single job using hybrid scoring (Gemini + skill bonus)."""
+    # Validate required non-empty strings
+    err = _require_non_empty(arguments, ["title", "company", "url", "text"])
+    if err:
+        return err
+
     db.init_db()
 
     job = {
@@ -130,6 +161,11 @@ async def tool_bootstrap(arguments: dict) -> str:
 
 async def tool_generate_cover_letter(arguments: dict) -> str:
     """Generate tailored resume bullets and cover letter for a specific job."""
+    # Validate required non-empty strings
+    err = _require_non_empty(arguments, ["title", "company", "text"])
+    if err:
+        return err
+
     job = {
         "title": arguments["title"],
         "company": arguments["company"],
@@ -163,7 +199,7 @@ async def tool_get_platforms(arguments: dict) -> str:
 async def tool_get_analytics(arguments: dict) -> str:
     """Return scoring analytics from jobs.db."""
     db.init_db()
-    hours = arguments.get("hours", 168)  # default: last 7 days
+    hours = int(_clamp(arguments.get("hours", 168), 1, 8760))  # default: last 7 days
 
     with closing(sqlite3.connect(config.DB_PATH)) as conn:
         total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
@@ -195,8 +231,8 @@ async def tool_get_analytics(arguments: dict) -> str:
 async def tool_get_saved_jobs(arguments: dict) -> str:
     """Return previously scored jobs from the database."""
     db.init_db()
-    hours = arguments.get("hours", 24)
-    min_score = arguments.get("min_score", 0)
+    hours = int(_clamp(arguments.get("hours", 24), 1, 8760))
+    min_score = int(_clamp(arguments.get("min_score", 0), 0, 100))
 
     with closing(sqlite3.connect(config.DB_PATH)) as conn:
         rows = conn.execute("""
@@ -256,6 +292,11 @@ async def tool_run_health_check(arguments: dict) -> str:
 
 async def tool_save_job(arguments: dict) -> str:
     """Bookmark a job for later reference."""
+    # Validate required non-empty string
+    err = _require_non_empty(arguments, ["job_id"])
+    if err:
+        return err
+
     job_id = arguments["job_id"]
     title = arguments.get("title", "")
     company = arguments.get("company", "")
@@ -328,10 +369,16 @@ async def tool_update_profile(arguments: dict) -> str:
     if not os.path.exists(profile_path):
         return json.dumps({"error": "profile.json not found. Run bootstrap first."})
 
+    key = arguments["key"]
+
+    # Whitelist allowed keys
+    if key not in ALLOWED_PROFILE_KEYS:
+        return json.dumps({
+            "error": f"Key '{key}' is not allowed. Allowed keys: {sorted(ALLOWED_PROFILE_KEYS)}",
+        })
+
     with open(profile_path, "r") as f:
         profile = json.load(f)
-
-    key = arguments["key"]
     value = arguments["value"]
 
     # Parse value as JSON if it looks like a list/dict
@@ -360,6 +407,10 @@ async def tool_export_data(arguments: dict) -> str:
     """Export all scored jobs from jobs.db as JSON."""
     db.init_db()
     fmt = arguments.get("format", "json")
+
+    # Validate format enum — default to json for unknown values
+    if fmt not in ALLOWED_EXPORT_FORMATS:
+        fmt = "json"
 
     with closing(sqlite3.connect(config.DB_PATH)) as conn:
         rows = conn.execute("""
@@ -411,6 +462,11 @@ async def tool_get_upcoming_interviews(arguments: dict) -> str:
 
 async def tool_set_reminder(arguments: dict) -> str:
     """Set a follow-up reminder."""
+    # Validate required non-empty strings
+    err = _require_non_empty(arguments, ["message", "due_at"])
+    if err:
+        return err
+
     message = arguments["message"]
     due_at = arguments["due_at"]
     reminder_id = storage.add_reminder(message, due_at)
