@@ -15,3 +15,7 @@ build/
 # MCP-specific
 mcp-wrapper/wrapper.db
 mcp-wrapper/server.log
+
+# Log files from CI
+logs_*/
+_test_*.py
