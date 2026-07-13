@@ -22,3 +22,5 @@ _test_*.py
 mcp-wrapper/exports/
 mcp-wrapper/http_server.log
 fly.toml
+web/node_modules/
+web/.next/
