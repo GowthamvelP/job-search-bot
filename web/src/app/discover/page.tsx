@@ -1,14 +1,18 @@
 "use client";
 
-import { useState, useEffect, useMemo, Suspense } from "react";
+import { useState, useEffect, useMemo, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Search, Loader2, ExternalLink, Bookmark, FileText, AlertCircle, Building2, Filter, X } from "lucide-react";
+import {
+  Search, Loader2, ExternalLink, Bookmark, FileText,
+  AlertCircle, Building2, Filter, X, Zap, MapPin,
+  Calendar, Star, ChevronDown, Sparkles,
+} from "lucide-react";
 import { callTool } from "@/lib/mcp-client";
 import { getKeys, hasKeys } from "@/lib/keys";
 import { getProfile } from "@/lib/profile";
@@ -16,7 +20,6 @@ import { DEMO_JOBS } from "@/data/demo-jobs";
 import { COMPANIES, CATEGORIES, Company } from "@/data/companies";
 import { searchCompanies, JobResult } from "@/lib/direct-search";
 import { CoverLetterModal } from "@/components/cover-letter-modal";
-import { JobDetailModal } from "@/components/job-detail-modal";
 
 interface Job {
   id: string;
@@ -47,33 +50,54 @@ interface Filters {
   visaOnly: boolean;
 }
 
-function ScoreBadge({ score }: { score?: number }) {
-  if (!score) return <Badge variant="outline">—</Badge>;
-  const color = score >= 80 ? "bg-green-500" : score >= 60 ? "bg-yellow-500" : "bg-red-400";
+const STATIC_COUNTRIES = ["India", "United States", "United Kingdom", "Canada", "Germany", "Singapore", "Australia", "Remote"];
+const STATIC_SOURCES = ["linkedin", "indeed", "glassdoor", "naukri", "greenhouse", "lever"];
+
+// --- Score ring component ---
+function ScoreRing({ score, size = "sm" }: { score?: number; size?: "sm" | "lg" }) {
+  if (!score) return null;
+  const dim = size === "lg" ? 48 : 32;
+  const stroke = size === "lg" ? 4 : 3;
+  const radius = (dim - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const progress = (score / 100) * circumference;
+  const color = score >= 80 ? "#22c55e" : score >= 60 ? "#eab308" : "#f87171";
+
   return (
-    <Badge className={`${color} text-white font-bold`}>
-      {score}
-    </Badge>
+    <div className="relative flex items-center justify-center" style={{ width: dim, height: dim }}>
+      <svg width={dim} height={dim} className="-rotate-90">
+        <circle cx={dim/2} cy={dim/2} r={radius} fill="none" stroke="currentColor" strokeWidth={stroke} className="text-border/30" />
+        <circle cx={dim/2} cy={dim/2} r={radius} fill="none" stroke={color} strokeWidth={stroke}
+          strokeDasharray={circumference} strokeDashoffset={circumference - progress} strokeLinecap="round"
+          className="transition-all duration-500"
+        />
+      </svg>
+      <span className={`absolute font-bold ${size === "lg" ? "text-sm" : "text-[10px]"}`} style={{ color }}>
+        {score}
+      </span>
+    </div>
   );
 }
 
 function SourceBadge({ source }: { source: string }) {
   const colors: Record<string, string> = {
-    linkedin: "bg-blue-600",
-    indeed: "bg-purple-600",
-    glassdoor: "bg-green-700",
-    naukri: "bg-orange-600",
+    linkedin: "bg-blue-500/20 text-blue-400",
+    indeed: "bg-purple-500/20 text-purple-400",
+    glassdoor: "bg-green-500/20 text-green-400",
+    naukri: "bg-orange-500/20 text-orange-400",
+    greenhouse: "bg-emerald-500/20 text-emerald-400",
+    lever: "bg-cyan-500/20 text-cyan-400",
   };
   return (
-    <Badge variant="secondary" className={`${colors[source] || ""} text-white text-[10px]`}>
+    <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${colors[source] || "bg-muted text-muted-foreground"}`}>
       {source}
-    </Badge>
+    </span>
   );
 }
 
 export default function DiscoverPageWrapper() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-background flex items-center justify-center">Loading...</div>}>
+    <Suspense fallback={<div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>}>
       <DiscoverPage />
     </Suspense>
   );
@@ -92,120 +116,76 @@ function DiscoverPage() {
   const [selectedCompanies, setSelectedCompanies] = useState<Company[]>(
     COMPANIES.filter(c => ["Stripe", "Notion", "Razorpay", "Postman", "GitLab"].includes(c.name))
   );
-  const [searchMode, setSearchMode] = useState<"companies" | "apify">("companies");
   const [showFilters, setShowFilters] = useState(false);
+  const [showCompanies, setShowCompanies] = useState(false);
 
-  // Modal state
+  // Selected job for detail pane
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+
+  // Cover letter modal
   const [coverLetterJob, setCoverLetterJob] = useState<Job | null>(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
 
+  // Scoring state
+  const [scoringId, setScoringId] = useState<string | null>(null);
+  const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(new Set());
+
   // Filters
   const [filters, setFilters] = useState<Filters>({
-    country: "all",
-    jobType: "all",
-    freshness: "all",
-    minScore: "all",
-    source: "all",
-    visaOnly: false,
+    country: "all", jobType: "all", freshness: "all",
+    minScore: "all", source: "all", visaOnly: false,
   });
 
   const activeFilterCount = useMemo(() => {
-    let count = 0;
-    if (filters.country !== "all") count++;
-    if (filters.jobType !== "all") count++;
-    if (filters.freshness !== "all") count++;
-    if (filters.minScore !== "all") count++;
-    if (filters.source !== "all") count++;
-    if (filters.visaOnly) count++;
-    return count;
+    let c = 0;
+    if (filters.country !== "all") c++;
+    if (filters.jobType !== "all") c++;
+    if (filters.freshness !== "all") c++;
+    if (filters.minScore !== "all") c++;
+    if (filters.source !== "all") c++;
+    if (filters.visaOnly) c++;
+    return c;
   }, [filters]);
 
-  // Derive unique countries and sources from results for filter options
-  // Merge static defaults with any dynamic values from results
-  const STATIC_COUNTRIES = ["India", "United States", "United Kingdom", "Canada", "Germany", "Singapore", "Australia", "Remote"];
-  const STATIC_SOURCES = ["linkedin", "indeed", "glassdoor", "naukri", "greenhouse", "lever"];
-
-  const availableCountries = useMemo(() => {
-    const countries = new Set<string>(STATIC_COUNTRIES);
-    jobs.forEach((j) => {
-      const loc = j.location || "";
-      const parts = loc.split(",").map((s) => s.trim());
-      const country = parts[parts.length - 1];
-      if (country && country.length > 1) countries.add(country);
-    });
-    return Array.from(countries).sort();
-  }, [jobs]);
-
-  const availableSources = useMemo(() => {
-    const sources = new Set<string>(STATIC_SOURCES);
-    jobs.forEach((j) => {
-      if (j.source) sources.add(j.source);
-    });
-    return Array.from(sources).sort();
-  }, [jobs]);
-
-  // Apply filters to jobs
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
-      // Country filter
-      if (filters.country !== "all") {
-        const loc = (job.location || "").toLowerCase();
-        if (!loc.includes(filters.country.toLowerCase())) return false;
-      }
-
-      // Job type filter
+      if (filters.country !== "all" && !(job.location || "").toLowerCase().includes(filters.country.toLowerCase())) return false;
       if (filters.jobType === "remote" && !job.is_remote) return false;
       if (filters.jobType === "onsite" && job.is_remote) return false;
-      if (filters.jobType === "hybrid") {
-        const text = (job.title + " " + job.location).toLowerCase();
-        if (!text.includes("hybrid")) return false;
-      }
-
-      // Freshness filter
       if (filters.freshness !== "all" && job.posted_date) {
-        const days = parseInt(filters.freshness);
-        const posted = new Date(job.posted_date);
-        const cutoff = new Date();
-        cutoff.setDate(cutoff.getDate() - days);
-        if (posted < cutoff) return false;
+        const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - parseInt(filters.freshness));
+        if (new Date(job.posted_date) < cutoff) return false;
       }
-
-      // Score filter
-      if (filters.minScore !== "all") {
-        const min = parseInt(filters.minScore);
-        if (!job.score || job.score < min) return false;
-      }
-
-      // Source filter
+      if (filters.minScore !== "all" && (!job.score || job.score < parseInt(filters.minScore))) return false;
       if (filters.source !== "all" && job.source !== filters.source) return false;
-
-      // Visa filter
       if (filters.visaOnly && !job.visa_sponsorship) return false;
-
       return true;
     });
   }, [jobs, filters]);
 
-  function resetFilters() {
-    setFilters({
-      country: "all",
-      jobType: "all",
-      freshness: "all",
-      minScore: "all",
-      source: "all",
-      visaOnly: false,
-    });
-  }
-
-  // Show demo data on first load if in demo mode
+  // Demo data on load
   useEffect(() => {
-    if (isDemo && !searched) {
-      setJobs(DEMO_JOBS as Job[]);
-      setSearched(true);
-    }
+    if (isDemo && !searched) { setJobs(DEMO_JOBS as Job[]); setSearched(true); }
   }, [isDemo, searched]);
+
+  // Keyboard navigation
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedIndex(i => { const next = Math.min(i + 1, filteredJobs.length - 1); setSelectedJob(filteredJobs[next]); return next; });
+      } else if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedIndex(i => { const next = Math.max(i - 1, 0); setSelectedJob(filteredJobs[next]); return next; });
+      } else if (e.key === "Escape") {
+        setSelectedJob(null); setSelectedIndex(-1);
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [filteredJobs]);
 
   function toggleCompany(company: Company) {
     setSelectedCompanies(prev =>
@@ -217,345 +197,365 @@ function DiscoverPage() {
 
   async function handleSearch() {
     if (isDemo) {
-      const filtered = DEMO_JOBS.filter(
-        (j) => j.title.toLowerCase().includes(query.toLowerCase()) ||
-               j.company.toLowerCase().includes(query.toLowerCase())
-      );
-      setJobs(filtered as Job[]);
-      setSearched(true);
-      return;
+      const q = query.toLowerCase();
+      const filtered = DEMO_JOBS.filter((j) => j.title.toLowerCase().includes(q) || j.company.toLowerCase().includes(q));
+      setJobs(filtered as Job[]); setSearched(true); return;
     }
-
-    setLoading(true);
-    setError("");
+    setLoading(true); setError("");
     try {
-      if (searchMode === "companies" && selectedCompanies.length > 0) {
-        // Direct search — free, no API key needed
+      if (selectedCompanies.length > 0) {
         const results = await searchCompanies(selectedCompanies, { query, remoteOnly: filters.jobType === "remote" });
         setJobs(results as Job[]);
       } else {
-        // MCP search (requires Apify key)
         const keys = getKeys();
-        if (!keys.apify) {
-          setError("Apify API key required for broad search. Use company search (free) or add your Apify key in settings.");
-          setLoading(false);
-          return;
-        }
+        if (!keys.apify) { setError("Select companies above (free) or add Apify key for broad search."); setLoading(false); return; }
         const result = await callTool("search_jobs", { posted_within_days: postedDays }, keys);
         let jobList = result.jobs || [];
-        if (query.trim()) {
-          const q = query.toLowerCase();
-          jobList = jobList.filter((j: Job) =>
-            j.title.toLowerCase().includes(q) || j.company.toLowerCase().includes(q)
-          );
-        }
+        if (query.trim()) { const q = query.toLowerCase(); jobList = jobList.filter((j: Job) => j.title.toLowerCase().includes(q) || j.company.toLowerCase().includes(q)); }
         setJobs(jobList);
       }
       setSearched(true);
-    } catch (e: any) {
-      setError(e.message || "Search failed.");
-    } finally {
-      setLoading(false);
-    }
+    } catch (e: any) { setError(e.message || "Search failed."); }
+    finally { setLoading(false); }
+  }
+
+  async function handleScoreJob(job: Job) {
+    setScoringId(job.id);
+    try {
+      const keys = getKeys();
+      const result = await callTool("score_job", {
+        title: job.title, company: job.company, url: job.url,
+        text: job.text || `${job.title} at ${job.company}`,
+        location: job.location || "", is_remote: job.is_remote || false,
+      }, keys);
+      if (!result.error) {
+        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, score: result.final_score, skill_bonus: result.skill_bonus, reasoning: result.reasoning } : j));
+        if (selectedJob?.id === job.id) setSelectedJob({ ...job, score: result.final_score, skill_bonus: result.skill_bonus, reasoning: result.reasoning });
+      }
+    } catch {}
+    finally { setScoringId(null); }
+  }
+
+  async function handleBookmark(job: Job) {
+    try {
+      const keys = getKeys();
+      await callTool("save_job", { job_id: job.id, title: job.title, company: job.company, url: job.url }, keys);
+      setBookmarkedIds(prev => new Set([...prev, job.id]));
+    } catch {}
+  }
+
+  function resetFilters() {
+    setFilters({ country: "all", jobType: "all", freshness: "all", minScore: "all", source: "all", visaOnly: false });
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Demo mode banner */}
-      {isDemo && (
-        <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 text-center text-sm">
-          <AlertCircle className="w-4 h-4 inline mr-1" />
-          Demo mode — showing sample data.{" "}
-          <a href="/onboarding" className="font-medium underline">Add your API keys</a> to search real jobs.
+    <div className="flex flex-col h-full">
+      {/* Top bar */}
+      <header className="flex items-center gap-3 px-4 h-14 border-b border-border/50 shrink-0">
+        <div className="flex-1 max-w-md">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search roles, companies..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              className="pl-9 h-9 bg-muted/30 border-transparent focus:border-border"
+            />
+          </div>
+        </div>
+        <Button
+          variant={showFilters ? "secondary" : "ghost"}
+          size="sm"
+          onClick={() => setShowFilters(!showFilters)}
+          className="relative h-8"
+        >
+          <Filter className="w-3.5 h-3.5" />
+          <span className="ml-1.5 text-xs">Filters</span>
+          {activeFilterCount > 0 && (
+            <span className="absolute -top-1 -right-1 bg-violet-500 text-white text-[9px] rounded-full w-4 h-4 flex items-center justify-center font-bold">
+              {activeFilterCount}
+            </span>
+          )}
+        </Button>
+        <Button
+          variant={showCompanies ? "secondary" : "ghost"}
+          size="sm"
+          onClick={() => setShowCompanies(!showCompanies)}
+          className="h-8"
+        >
+          <Building2 className="w-3.5 h-3.5" />
+          <span className="ml-1.5 text-xs">{selectedCompanies.length} cos</span>
+        </Button>
+        <Button onClick={handleSearch} disabled={loading} size="sm" className="h-8 px-4">
+          {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+          <span className="ml-1.5 text-xs">Search</span>
+        </Button>
+      </header>
+
+      {/* Filter bar (collapsible) */}
+      <AnimatePresence>
+        {showFilters && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+            className="border-b border-border/50 overflow-hidden"
+          >
+            <div className="px-4 py-3 flex flex-wrap items-center gap-3">
+              <select value={filters.country} onChange={(e) => setFilters({ ...filters, country: e.target.value })}
+                className="h-7 rounded-md border border-input bg-muted/30 px-2 text-xs">
+                <option value="all">All countries</option>
+                {STATIC_COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select value={filters.jobType} onChange={(e) => setFilters({ ...filters, jobType: e.target.value as JobType })}
+                className="h-7 rounded-md border border-input bg-muted/30 px-2 text-xs">
+                <option value="all">All types</option>
+                <option value="remote">Remote</option>
+                <option value="onsite">On-site</option>
+                <option value="hybrid">Hybrid</option>
+              </select>
+              <select value={filters.freshness} onChange={(e) => setFilters({ ...filters, freshness: e.target.value as Freshness })}
+                className="h-7 rounded-md border border-input bg-muted/30 px-2 text-xs">
+                <option value="all">Any time</option>
+                <option value="1">24h</option>
+                <option value="3">3 days</option>
+                <option value="7">Week</option>
+                <option value="14">2 weeks</option>
+                <option value="30">Month</option>
+              </select>
+              <select value={filters.minScore} onChange={(e) => setFilters({ ...filters, minScore: e.target.value as ScoreRange })}
+                className="h-7 rounded-md border border-input bg-muted/30 px-2 text-xs">
+                <option value="all">Any score</option>
+                <option value="80">80+</option>
+                <option value="60">60+</option>
+                <option value="40">40+</option>
+              </select>
+              <select value={filters.source} onChange={(e) => setFilters({ ...filters, source: e.target.value })}
+                className="h-7 rounded-md border border-input bg-muted/30 px-2 text-xs">
+                <option value="all">All sources</option>
+                {STATIC_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input type="checkbox" checked={filters.visaOnly} onChange={(e) => setFilters({ ...filters, visaOnly: e.target.checked })} className="rounded w-3 h-3" />
+                Visa
+              </label>
+              {activeFilterCount > 0 && (
+                <button onClick={resetFilters} className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1">
+                  <X className="w-3 h-3" /> Clear
+                </button>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Company picker (collapsible) */}
+      <AnimatePresence>
+        {showCompanies && !isDemo && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+            className="border-b border-border/50 overflow-hidden"
+          >
+            <div className="px-4 py-3 max-h-32 overflow-y-auto">
+              {CATEGORIES.map(cat => (
+                <div key={cat} className="mb-1.5">
+                  <span className="text-[9px] text-muted-foreground uppercase tracking-wider">{cat}</span>
+                  <div className="flex flex-wrap gap-1 mt-0.5">
+                    {COMPANIES.filter(c => c.category === cat).map(company => {
+                      const selected = selectedCompanies.some(s => s.slug === company.slug);
+                      return (
+                        <button key={company.slug} onClick={() => toggleCompany(company)}
+                          className={`px-2 py-0.5 rounded text-[10px] border transition-all ${
+                            selected ? "bg-violet-500/20 text-violet-300 border-violet-500/30" : "bg-transparent text-muted-foreground border-border/50 hover:border-border"
+                          }`}
+                        >{company.name}</button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Error */}
+      {error && (
+        <div className="mx-4 mt-2 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 text-xs text-red-400">
+          {error}
         </div>
       )}
 
-      <div className="max-w-6xl mx-auto p-6">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold">Discover Jobs</h1>
-          <p className="text-muted-foreground mt-1">
-            Search across LinkedIn, Indeed, Glassdoor, and Naukri — scored against your resume.
-          </p>
-        </div>
-
-        {/* Search form */}
-        <Card className="p-4 mb-4">
-          <div className="flex flex-col md:flex-row gap-3">
-            <div className="flex-1">
-              <Input
-                placeholder="Role, company, or keyword..."
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              />
-            </div>
-            <div className="flex gap-3 items-center">
-              <Button
-                variant={showFilters ? "secondary" : "outline"}
-                size="sm"
-                onClick={() => setShowFilters(!showFilters)}
-                className="relative"
-              >
-                <Filter className="w-4 h-4" />
-                <span className="ml-1.5">Filters</span>
-                {activeFilterCount > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 bg-primary text-primary-foreground text-[10px] rounded-full w-4 h-4 flex items-center justify-center">
-                    {activeFilterCount}
-                  </span>
-                )}
-              </Button>
-              <Button onClick={handleSearch} disabled={loading}>
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                <span className="ml-2">Search</span>
-              </Button>
-            </div>
-          </div>
-        </Card>
-
-        {/* Filter panel */}
-        {showFilters && (
-          <Card className="p-4 mb-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Filter className="w-4 h-4 text-muted-foreground" />
-                <Label className="text-sm font-medium">Filter results</Label>
+      {/* Split pane: list + detail */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Job list */}
+        <div className={`${selectedJob ? "w-[380px] min-w-[380px]" : "flex-1 max-w-3xl mx-auto"} border-r border-border/30 overflow-y-auto transition-all duration-200`}>
+          {!searched ? (
+            <div className="flex flex-col items-center justify-center h-full text-center px-8">
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500/20 to-indigo-500/20 flex items-center justify-center mb-4">
+                <Sparkles className="w-6 h-6 text-violet-400" />
               </div>
-              {activeFilterCount > 0 && (
-                <Button variant="ghost" size="sm" onClick={resetFilters} className="text-xs h-7">
-                  <X className="w-3 h-3 mr-1" />
-                  Clear all
-                </Button>
-              )}
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-              {/* Country */}
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">Country</Label>
-                <select
-                  value={filters.country}
-                  onChange={(e) => setFilters({ ...filters, country: e.target.value })}
-                  className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
-                >
-                  <option value="all">All countries</option>
-                  {availableCountries.map((c) => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Job Type */}
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">Job type</Label>
-                <select
-                  value={filters.jobType}
-                  onChange={(e) => setFilters({ ...filters, jobType: e.target.value as JobType })}
-                  className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
-                >
-                  <option value="all">All types</option>
-                  <option value="remote">Remote</option>
-                  <option value="onsite">On-site</option>
-                  <option value="hybrid">Hybrid</option>
-                </select>
-              </div>
-
-              {/* Freshness */}
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">Posted within</Label>
-                <select
-                  value={filters.freshness}
-                  onChange={(e) => setFilters({ ...filters, freshness: e.target.value as Freshness })}
-                  className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
-                >
-                  <option value="all">Any time</option>
-                  <option value="1">Last 24 hours</option>
-                  <option value="3">Last 3 days</option>
-                  <option value="7">Last week</option>
-                  <option value="14">Last 2 weeks</option>
-                  <option value="30">Last month</option>
-                </select>
-              </div>
-
-              {/* Relevancy / Score */}
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">Min score</Label>
-                <select
-                  value={filters.minScore}
-                  onChange={(e) => setFilters({ ...filters, minScore: e.target.value as ScoreRange })}
-                  className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
-                >
-                  <option value="all">Any score</option>
-                  <option value="80">80+ (strong match)</option>
-                  <option value="60">60+ (good match)</option>
-                  <option value="40">40+ (possible fit)</option>
-                </select>
-              </div>
-
-              {/* Source */}
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">Source</Label>
-                <select
-                  value={filters.source}
-                  onChange={(e) => setFilters({ ...filters, source: e.target.value })}
-                  className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
-                >
-                  <option value="all">All sources</option>
-                  {availableSources.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Visa sponsorship */}
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">Visa</Label>
-                <label className="flex items-center gap-2 h-9 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={filters.visaOnly}
-                    onChange={(e) => setFilters({ ...filters, visaOnly: e.target.checked })}
-                    className="rounded"
-                  />
-                  <span className="text-sm">Sponsorship only</span>
-                </label>
-              </div>
-            </div>
-          </Card>
-        )}
-
-        {/* Company selection */}
-        {!isDemo && (
-          <Card className="p-4 mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <Building2 className="w-4 h-4 text-muted-foreground" />
-              <Label className="text-sm font-medium">Companies to search (free, no API key needed)</Label>
-              <Badge variant="outline" className="text-[10px]">{selectedCompanies.length} selected</Badge>
-            </div>
-            {CATEGORIES.map(cat => (
-              <div key={cat} className="mb-2">
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">{cat}</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {COMPANIES.filter(c => c.category === cat).map(company => {
-                    const selected = selectedCompanies.some(s => s.slug === company.slug);
-                    return (
-                      <button
-                        key={company.slug}
-                        onClick={() => toggleCompany(company)}
-                        className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
-                          selected
-                            ? "bg-primary text-primary-foreground border-primary"
-                            : "bg-muted/50 text-muted-foreground border-border hover:border-primary/50"
-                        }`}
-                      >
-                        {company.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </Card>
-        )}
-
-        {/* Error */}
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 mb-4 text-sm text-red-500">
-            {error}
-          </div>
-        )}
-
-        {/* Results */}
-        {searched && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
-                {filteredJobs.length} result{filteredJobs.length !== 1 ? "s" : ""}
-                {filteredJobs.length !== jobs.length && ` (filtered from ${jobs.length})`}
-                {isDemo && " (demo data)"}
+              <h2 className="text-lg font-medium mb-1">Find your next role</h2>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                Select companies above and hit Search, or use keyboard shortcuts: <kbd className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">j</kbd>/<kbd className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">k</kbd> to navigate, <kbd className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">Esc</kbd> to close
               </p>
             </div>
+          ) : filteredJobs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center px-8">
+              <p className="text-sm text-muted-foreground">
+                {jobs.length > 0 ? "No results match your filters." : "No jobs found. Try different companies or keywords."}
+              </p>
+              {activeFilterCount > 0 && <button onClick={resetFilters} className="mt-2 text-xs text-violet-400 hover:underline">Clear filters</button>}
+            </div>
+          ) : (
+            <div className="divide-y divide-border/30">
+              {/* Result count */}
+              <div className="px-4 py-2 text-[11px] text-muted-foreground sticky top-0 bg-background/80 backdrop-blur-sm z-10">
+                {filteredJobs.length} result{filteredJobs.length !== 1 ? "s" : ""}
+                {filteredJobs.length !== jobs.length && ` of ${jobs.length}`}
+              </div>
 
-            {filteredJobs.length === 0 ? (
-              <Card className="p-8 text-center">
-                <p className="text-muted-foreground">
-                  {jobs.length > 0
-                    ? "No results match your filters. Try adjusting or clearing them."
-                    : "No results found. Try a broader search or different time range."}
-                </p>
-                {jobs.length > 0 && activeFilterCount > 0 && (
-                  <Button variant="ghost" size="sm" onClick={resetFilters} className="mt-2">
-                    Clear filters
-                  </Button>
-                )}
-              </Card>
-            ) : (
-              <div className="space-y-2">
-                {filteredJobs.map((job) => (
-                  <Card
-                    key={job.id}
-                    className="p-4 hover:border-primary/50 transition-colors cursor-pointer"
-                    onClick={() => { setSelectedJob(job); setDetailOpen(true); }}
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <ScoreBadge score={job.score} />
-                          <h3 className="font-semibold truncate">{job.title}</h3>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <span>{job.company}</span>
-                          <span>•</span>
-                          <span>{job.location}</span>
-                          {job.is_remote && <Badge variant="outline" className="text-[10px]">Remote</Badge>}
-                          {job.visa_sponsorship && <Badge variant="outline" className="text-[10px]">Visa</Badge>}
-                        </div>
-                        {job.reasoning && (
-                          <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{job.reasoning}</p>
-                        )}
-                        <div className="flex items-center gap-2 mt-2">
-                          <SourceBadge source={job.source} />
-                          <span className="text-[10px] text-muted-foreground">{job.posted_date}</span>
-                          {job.skill_bonus ? (
-                            <span className="text-[10px] text-green-500">+{job.skill_bonus} skill bonus</span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={isDemo}
-                          title="Cover letter"
-                          onClick={() => { setCoverLetterJob(job); setCoverLetterOpen(true); }}
-                        >
-                          <FileText className="w-4 h-4" />
-                        </Button>
-                        <a href={job.url} target="_blank" rel="noopener">
-                          <Button variant="ghost" size="sm" title="Open">
-                            <ExternalLink className="w-4 h-4" />
-                          </Button>
-                        </a>
+              {/* Job rows */}
+              {filteredJobs.map((job, idx) => (
+                <button
+                  key={job.id}
+                  onClick={() => { setSelectedJob(job); setSelectedIndex(idx); }}
+                  className={`w-full text-left px-4 py-3 transition-colors hover:bg-accent/30 ${
+                    selectedJob?.id === job.id ? "bg-accent/50 border-l-2 border-violet-500" : "border-l-2 border-transparent"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <ScoreRing score={job.score} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{job.title}</p>
+                      <p className="text-xs text-muted-foreground truncate">{job.company} · {job.location}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <SourceBadge source={job.source} />
+                        {job.is_remote && <span className="text-[10px] text-emerald-400">Remote</span>}
+                        {job.posted_date && <span className="text-[10px] text-muted-foreground">{job.posted_date}</span>}
                       </div>
                     </div>
-                  </Card>
-                ))}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Detail pane */}
+        <AnimatePresence>
+          {selectedJob && (
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              className="flex-1 overflow-y-auto"
+            >
+              <div className="p-6 max-w-2xl">
+                {/* Header */}
+                <div className="flex items-start justify-between mb-4">
+                  <div>
+                    <h2 className="text-xl font-semibold">{selectedJob.title}</h2>
+                    <p className="text-sm text-muted-foreground mt-0.5 flex items-center gap-2">
+                      <Building2 className="w-3.5 h-3.5" />
+                      {selectedJob.company}
+                    </p>
+                  </div>
+                  <button onClick={() => { setSelectedJob(null); setSelectedIndex(-1); }}
+                    className="p-1.5 rounded-md hover:bg-accent transition-colors">
+                    <X className="w-4 h-4 text-muted-foreground" />
+                  </button>
+                </div>
+
+                {/* Meta */}
+                <div className="flex flex-wrap gap-2 mb-5">
+                  {selectedJob.location && (
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded">
+                      <MapPin className="w-3 h-3" />{selectedJob.location}
+                    </span>
+                  )}
+                  {selectedJob.posted_date && (
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded">
+                      <Calendar className="w-3 h-3" />{selectedJob.posted_date}
+                    </span>
+                  )}
+                  {selectedJob.is_remote && <Badge variant="outline" className="text-[10px] border-emerald-500/30 text-emerald-400">Remote</Badge>}
+                  {selectedJob.visa_sponsorship && <Badge variant="outline" className="text-[10px] border-blue-500/30 text-blue-400">Visa</Badge>}
+                  <SourceBadge source={selectedJob.source} />
+                </div>
+
+                {/* Score section */}
+                <div className="mb-5 p-4 rounded-lg bg-muted/30 border border-border/50">
+                  {selectedJob.score ? (
+                    <div className="flex items-center gap-4">
+                      <ScoreRing score={selectedJob.score} size="lg" />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">Match Score</span>
+                          {selectedJob.skill_bonus ? (
+                            <span className="text-[10px] text-emerald-400 flex items-center gap-0.5">
+                              <Zap className="w-3 h-3" />+{selectedJob.skill_bonus}
+                            </span>
+                          ) : null}
+                        </div>
+                        {selectedJob.reasoning && (
+                          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{selectedJob.reasoning}</p>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <Button variant="outline" size="sm" onClick={() => handleScoreJob(selectedJob)}
+                        disabled={scoringId === selectedJob.id} className="h-8">
+                        {scoringId === selectedJob.id ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
+                        Score this job
+                      </Button>
+                      <span className="text-[10px] text-muted-foreground">Uses Gemini to evaluate fit against your resume</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-2 mb-5">
+                  <a href={selectedJob.url} target="_blank" rel="noopener">
+                    <Button size="sm" className="h-8 bg-violet-600 hover:bg-violet-700 text-white">
+                      <ExternalLink className="w-3.5 h-3.5 mr-1.5" />Apply
+                    </Button>
+                  </a>
+                  <Button variant="outline" size="sm" className="h-8"
+                    onClick={() => { setCoverLetterJob(selectedJob); setCoverLetterOpen(true); }}>
+                    <FileText className="w-3.5 h-3.5 mr-1.5" />Cover Letter
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-8"
+                    onClick={() => handleBookmark(selectedJob)}
+                    disabled={bookmarkedIds.has(selectedJob.id)}>
+                    <Bookmark className={`w-3.5 h-3.5 mr-1.5 ${bookmarkedIds.has(selectedJob.id) ? "fill-current text-violet-400" : ""}`} />
+                    {bookmarkedIds.has(selectedJob.id) ? "Saved" : "Save"}
+                  </Button>
+                </div>
+
+                <Separator className="mb-5" />
+
+                {/* Job description */}
+                {selectedJob.text ? (
+                  <div>
+                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Description</h4>
+                    <div className="text-sm text-foreground/80 whitespace-pre-wrap leading-relaxed">
+                      {selectedJob.text}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground italic">
+                    No description available.{" "}
+                    <a href={selectedJob.url} target="_blank" rel="noopener" className="text-violet-400 hover:underline">
+                      View on source
+                    </a>
+                  </p>
+                )}
               </div>
-            )}
-          </div>
-        )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
-      {/* Modals */}
-      <JobDetailModal
-        open={detailOpen}
-        onOpenChange={setDetailOpen}
-        job={selectedJob}
-        onGenerateCoverLetter={(job) => {
-          setDetailOpen(false);
-          setCoverLetterJob(job);
-          setCoverLetterOpen(true);
-        }}
-      />
+      {/* Cover letter modal */}
       <CoverLetterModal
         open={coverLetterOpen}
         onOpenChange={setCoverLetterOpen}
