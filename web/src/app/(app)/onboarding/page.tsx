@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -20,13 +20,15 @@ import {
 } from "lucide-react";
 import { saveKeys, validateGeminiKey, validateApifyKey, getKeys } from "@/lib/keys";
 import { callTool } from "@/lib/mcp-client";
-import { saveProfile } from "@/lib/profile";
+import { saveProfile, getProfile, clearProfile, UserProfile } from "@/lib/profile";
 
 type KeyStatus = "idle" | "validating" | "valid" | "invalid";
 
 export default function OnboardingPage() {
   const router = useRouter();
   const [step, setStep] = useState(1);
+  const [existingProfile, setExistingProfile] = useState<UserProfile | null>(null);
+  const [showReupload, setShowReupload] = useState(false);
 
   // Step 1: Keys
   const [geminiKey, setGeminiKey] = useState("");
@@ -52,6 +54,98 @@ export default function OnboardingPage() {
 
   // Step 3: Profile preview
   const [profile, setProfile] = useState<any>(null);
+
+  // Check for existing profile on mount
+  useEffect(() => {
+    const p = getProfile();
+    if (p && p.anchor_skill) {
+      setExistingProfile(p);
+    }
+  }, []);
+
+  // If user has a profile and isn't re-uploading, show profile view
+  if (existingProfile && !showReupload) {
+    return (
+      <div className="h-full overflow-y-auto">
+        <div className="max-w-xl mx-auto p-6 py-12">
+          <div className="text-center mb-8">
+            <h1 className="text-2xl font-bold">Your Profile</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              This drives your job search scoring and filters
+            </p>
+          </div>
+
+          <Card className="p-6 space-y-5 border-border/50">
+            <div>
+              <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">Anchor Skill</Label>
+              <p className="text-lg font-semibold mt-0.5">{existingProfile.anchor_skill}</p>
+            </div>
+
+            {existingProfile.primary_skills?.length > 0 && (
+              <div>
+                <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">Primary Skills</Label>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {existingProfile.primary_skills.map((s) => (
+                    <Badge key={s} variant="secondary" className="text-xs">{s}</Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {existingProfile.search_terms?.length > 0 && (
+              <div>
+                <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">Search Terms</Label>
+                <ul className="mt-1 space-y-0.5">
+                  {existingProfile.search_terms.map((t) => (
+                    <li key={t} className="text-sm text-muted-foreground">· {t}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="flex gap-6">
+              {existingProfile.location && (
+                <div>
+                  <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">Location</Label>
+                  <p className="text-sm mt-0.5">{existingProfile.location}</p>
+                </div>
+              )}
+              {existingProfile.seniority && (
+                <div>
+                  <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">Seniority</Label>
+                  <p className="text-sm mt-0.5 capitalize">{existingProfile.seniority}</p>
+                </div>
+              )}
+              {existingProfile.years_experience !== undefined && (
+                <div>
+                  <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">Experience</Label>
+                  <p className="text-sm mt-0.5">{existingProfile.years_experience} years</p>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          <div className="flex gap-3 mt-6">
+            <Button
+              variant="outline"
+              onClick={() => {
+                clearProfile();
+                setExistingProfile(null);
+                setShowReupload(true);
+                setStep(2);
+              }}
+              className="cursor-pointer"
+            >
+              Upload new resume
+            </Button>
+            <Button onClick={() => router.push("/discover")} className="cursor-pointer">
+              Go to Discover
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   async function handleValidateGemini() {
     if (!geminiKey.trim()) return;
@@ -100,19 +194,26 @@ export default function OnboardingPage() {
     try {
       if (file.type === "text/plain") {
         const text = await file.text();
-        setFileTextPreview(text);
+        setFileTextPreview(text.slice(0, 500));
+        setResume(text);
+      } else if (file.type === "application/pdf") {
+        const { extractTextFromPDF } = await import("@/lib/pdf-extract");
+        const text = await extractTextFromPDF(file);
+        if (text.length < 50) {
+          throw new Error("Could not extract text from this PDF. Please paste your resume text below.");
+        }
+        setFileTextPreview(text.slice(0, 500));
         setResume(text);
       } else {
-        // For non-text files, we can't preview; user may paste text separately
         setFileTextPreview("");
-        // Optionally, we could attempt to parse PDF via backend later
-        setResume(`[${file.name} uploaded — text extraction not yet implemented for this file type. Please paste the text content below.]`);
+        setResume("");
+        throw new Error("Unsupported file type. Please upload a PDF or TXT file.");
       }
       setUploadStatus("success");
-    } catch (err) {
+    } catch (err: any) {
       console.error("File processing error:", err);
       setUploadStatus("error");
-      setExtractError("Failed to process file");
+      setExtractError(err.message || "Failed to process file. Try pasting your resume text instead.");
     }
   };
 
@@ -128,36 +229,141 @@ export default function OnboardingPage() {
     setExtractionStatus("extracting");
     setExtractError("");
 
-    try {
-      // In a real implementation, we would send the resume text to the backend
-      // via MCP bootstrap tool. For now, we simulate extraction with a delay.
-      // TODO: Replace with actual MCP call once backend supports text input.
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+    const resumeText = resume.trim();
+    if (!resumeText || resumeText.length < 100) {
+      setExtractError("Resume text is too short. Please paste your full resume.");
+      setExtractionStatus("error");
+      return;
+    }
 
-      // Simulate extraction result (same as before)
-      const simulatedProfile = {
-        anchor_skill: "Ruby on Rails",
-        primary_skills: ["AWS", "Node.js", "TypeScript", "Microservices"],
-        search_terms: [
-          "Technical Lead Ruby on Rails India",
-          "Backend Architect AWS Remote",
-        ],
-        location: "Bengaluru, India",
-        seniority: "lead",
+    if (resumeText.startsWith("[") && resumeText.includes("not yet implemented")) {
+      setExtractError("PDF/DOC text extraction failed. Please paste your resume text in the box below.");
+      setExtractionStatus("error");
+      return;
+    }
+
+    try {
+      const keys = getKeys();
+      if (!keys.gemini) {
+        throw new Error("Gemini API key is required for profile extraction.");
+      }
+
+      const prompt = `You are a job search assistant. Analyse the resume below and extract structured information to drive an automated job search.
+
+Return ONLY valid JSON — no markdown fences, no explanation outside the JSON object.
+
+The JSON must conform exactly to this schema:
+{
+  "anchor_skill": "<the candidate's SINGLE most defining technology/framework>",
+  "target_titles": ["<primary job title>", "<secondary>"],
+  "primary_skills": ["<skill 1>", "<skill 2>", "<skill 3>"],
+  "search_terms": ["<search query 1>", "<search query 2>", "<search query 3>"],
+  "location": "<city, country>",
+  "country": "<country>",
+  "years_experience": <integer>,
+  "seniority": "<one of: junior | mid | senior | lead | staff | principal>",
+  "keywords": ["<keyword 1>", "<keyword 2>"],
+  "summary": "<one sentence candidate summary>"
+}
+
+Rules for seniority — determine STRICTLY from total years of full-time experience:
+  0-1 years = "junior"
+  2-3 years = "mid"
+  4-6 years = "senior"
+  7-9 years = "lead"
+  10-12 years = "staff"
+  13+ years = "principal"
+Do NOT inflate seniority based on project complexity or tech breadth.
+
+Rules for target_titles — must match actual seniority:
+  junior (0-1 yrs): "Software Engineer", "Backend Developer", "Junior Developer"
+  mid (2-3 yrs): "Software Engineer", "Backend Engineer", "Full Stack Developer"
+  Do NOT suggest "Lead", "Staff", or "Architect" for candidates with less than 5 years experience.
+
+Rules for anchor_skill: Must be a specific technology (e.g. "Ruby on Rails", "React", "Python"), NOT a generic term like "backend".
+
+RESUME:
+${resumeText}`;
+
+      const models = [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-3-flash-preview",
+      ];
+
+      let data: any = null;
+      let lastError = "";
+
+      for (const model of models) {
+        const resp = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${keys.gemini}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+          }
+        );
+
+        if (resp.ok) {
+          data = await resp.json();
+          break;
+        }
+
+        const errData = await resp.json().catch(() => null);
+        const errMsg = errData?.error?.message || "";
+        if (resp.status === 429 || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("quota")) {
+          lastError = `${model}: quota exhausted`;
+          continue;
+        }
+        throw new Error(errMsg || `Gemini API error: ${resp.status}`);
+      }
+
+      if (!data) {
+        throw new Error(`All Gemini models exhausted. Last: ${lastError}. Try again in a few minutes.`);
+      }
+
+      let raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      raw = raw.trim().replace(/^```json\s*/, "").replace(/^```\s*/, "").replace(/```\s*$/, "").trim();
+
+      let extracted;
+      try {
+        extracted = JSON.parse(raw);
+      } catch {
+        throw new Error("Gemini didn't return valid JSON. Try pasting your resume as plain text.");
+      }
+
+      const profileData = {
+        anchor_skill: extracted.anchor_skill || "",
+        primary_skills: extracted.primary_skills || [],
+        search_terms: extracted.search_terms || [],
+        keywords: extracted.keywords || [],
+        location: extracted.location || "",
+        country: extracted.country || "",
+        seniority: extracted.seniority || "",
+        email: extracted.email || "",
+        summary: extracted.summary || "",
+        years_experience: extracted.years_experience || 0,
+        target_titles: extracted.target_titles || [],
       };
-      setProfile(simulatedProfile);
+      setProfile(profileData);
+      saveProfile(profileData);
       setExtractionStatus("success");
-      // Move to next step after a short delay to show success state
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      await new Promise((resolve) => setTimeout(resolve, 500));
       setStep(3);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Extraction error:", err);
       setExtractionStatus("error");
-      setExtractError("Failed to extract profile");
+      setExtractError(err.message || "Failed to extract profile. Check your Gemini API key.");
     }
   }
 
   function handleComplete() {
+    // Profile is already saved in handleExtractProfile via saveProfile()
     router.push("/discover");
   }
 

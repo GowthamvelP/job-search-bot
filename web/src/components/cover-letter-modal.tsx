@@ -41,22 +41,80 @@ export function CoverLetterModal({ open, onOpenChange, job }: CoverLetterModalPr
 
     try {
       const keys = getKeys();
-      const result = await callTool(
-        "generate_cover_letter",
-        {
-          title: job.title,
-          company: job.company,
-          text: job.text || `${job.title} at ${job.company}`,
-          location: job.location || "",
-          url: job.url || "",
-        },
-        keys
-      );
 
-      if (result.status === "error") {
-        throw new Error(result.message || "Generation failed");
+      // Try MCP server first
+      try {
+        const result = await callTool(
+          "generate_cover_letter",
+          {
+            title: job.title,
+            company: job.company,
+            text: job.text || `${job.title} at ${job.company}`,
+            location: job.location || "",
+            url: job.url || "",
+          },
+          keys
+        );
+
+        if (result.status === "error") {
+          throw new Error(result.message || "MCP generation failed");
+        }
+        if (result.materials) {
+          setMaterials(result.materials);
+          return;
+        }
+      } catch {
+        // MCP server not available — fall through to direct Gemini
       }
-      setMaterials(result.materials || "");
+
+      // Fallback: call Gemini directly from browser
+      if (!keys.gemini) {
+        throw new Error("Gemini API key required. Add it in Profile settings.");
+      }
+
+      const prompt = `You are a career advisor helping a candidate apply for a job.
+
+JOB POSTING:
+Title: ${job.title}
+Company: ${job.company}
+Location: ${job.location || "Not specified"}
+Description:
+${job.text || "(no description available)"}
+
+Write two things:
+1. 3-5 tailored resume bullet points highlighting relevant experience for this role.
+2. A concise, personalised cover letter (3 short paragraphs).
+
+Format with clear headings:
+## Resume Bullets
+<bullets>
+
+## Cover Letter
+<cover letter>`;
+
+      const models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+      let data: any = null;
+
+      for (const model of models) {
+        const resp = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${keys.gemini}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+          }
+        );
+        if (resp.ok) { data = await resp.json(); break; }
+        const err = await resp.json().catch(() => null);
+        if (resp.status === 429 || err?.error?.message?.includes("quota")) continue;
+        throw new Error(err?.error?.message || `Gemini error: ${resp.status}`);
+      }
+
+      if (!data) throw new Error("All Gemini models exhausted. Try again in a few minutes.");
+
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      if (!text) throw new Error("Gemini returned empty response.");
+      setMaterials(text.trim());
     } catch (err: any) {
       setError(err.message || "Failed to generate. Check your Gemini API key.");
     } finally {
