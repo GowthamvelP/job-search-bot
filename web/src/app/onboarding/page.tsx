@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -8,8 +8,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { CheckCircle, XCircle, Loader2, ExternalLink, Upload, Sparkles } from "lucide-react";
-import { saveKeys, validateGeminiKey, validateApifyKey } from "@/lib/keys";
+import {
+  CheckCircle,
+  XCircle,
+  Loader2,
+  ExternalLink,
+  Upload,
+  Sparkles,
+  FileText,
+} from "lucide-react";
+import { saveKeys, validateGeminiKey, validateApifyKey, getKeys } from "@/lib/keys";
+import { callTool } from "@/lib/mcp-client";
 
 type KeyStatus = "idle" | "validating" | "valid" | "invalid";
 
@@ -27,6 +36,17 @@ export default function OnboardingPage() {
 
   // Step 2: Resume
   const [resume, setResume] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [fileTextPreview, setFileTextPreview] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<
+    "idle" | "uploading" | "success" | "error"
+  >("idle");
+  const [extractionStatus, setExtractionStatus] = useState<
+    "idle" | "extracting" | "success" | "error"
+  >("idle");
+  const [extractError, setExtractError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Step 3: Profile preview
   const [profile, setProfile] = useState<any>(null);
@@ -56,17 +76,83 @@ export default function OnboardingPage() {
     router.push("/discover?demo=true");
   }
 
-  function handleResumeNext() {
-    // In a real app, this would call bootstrap via MCP
-    // For now, simulate a profile extraction
-    setProfile({
-      anchor_skill: "Ruby on Rails",
-      primary_skills: ["AWS", "Node.js", "TypeScript", "Microservices"],
-      search_terms: ["Technical Lead Ruby on Rails India", "Backend Architect AWS Remote"],
-      location: "Bengaluru, India",
-      seniority: "lead",
-    });
-    setStep(3);
+  const triggerFileInput = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processFile(file);
+  };
+
+  const handleFileDrop = async (files: FileList) => {
+    if (files.length > 0) {
+      processFile(files[0]);
+    }
+  };
+
+  const processFile = async (file: File) => {
+    setFile(file);
+    setUploadStatus("uploading");
+    setExtractError("");
+    try {
+      if (file.type === "text/plain") {
+        const text = await file.text();
+        setFileTextPreview(text);
+        setResume(text);
+      } else {
+        // For non-text files, we can't preview; user may paste text separately
+        setFileTextPreview("");
+        // Optionally, we could attempt to parse PDF via backend later
+        setResume(`[${file.name} uploaded — text extraction not yet implemented for this file type. Please paste the text content below.]`);
+      }
+      setUploadStatus("success");
+    } catch (err) {
+      console.error("File processing error:", err);
+      setUploadStatus("error");
+      setExtractError("Failed to process file");
+    }
+  };
+
+  const removeFile = () => {
+    setFile(null);
+    setFileTextPreview("");
+    setResume("");
+    setUploadStatus("idle");
+  };
+
+  async function handleExtractProfile() {
+    if (extractionStatus === "extracting") return;
+    setExtractionStatus("extracting");
+    setExtractError("");
+
+    try {
+      // In a real implementation, we would send the resume text to the backend
+      // via MCP bootstrap tool. For now, we simulate extraction with a delay.
+      // TODO: Replace with actual MCP call once backend supports text input.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+
+      // Simulate extraction result (same as before)
+      const simulatedProfile = {
+        anchor_skill: "Ruby on Rails",
+        primary_skills: ["AWS", "Node.js", "TypeScript", "Microservices"],
+        search_terms: [
+          "Technical Lead Ruby on Rails India",
+          "Backend Architect AWS Remote",
+        ],
+        location: "Bengaluru, India",
+        seniority: "lead",
+      };
+      setProfile(simulatedProfile);
+      setExtractionStatus("success");
+      // Move to next step after a short delay to show success state
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      setStep(3);
+    } catch (err) {
+      console.error("Extraction error:", err);
+      setExtractionStatus("error");
+      setExtractError("Failed to extract profile");
+    }
   }
 
   function handleComplete() {
@@ -78,14 +164,26 @@ export default function OnboardingPage() {
       <div className="w-full max-w-2xl">
         {/* Progress */}
         <div className="flex items-center gap-2 mb-8">
+          <div className="flex items-center gap-4 mb-2">
+            <Sparkles className="w-6 h-6 text-primary" />
+            <h2 className="text-sm font-medium text-muted-foreground tracking-wide uppercase">
+              JobAgent Setup
+            </h2>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 mb-8">
           {[1, 2, 3].map((s) => (
             <div key={s} className="flex items-center gap-2">
-              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
-                step >= s ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-              }`}>
+              <div
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+                  step >= s ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                }`}
+              >
                 {step > s ? "✓" : s}
               </div>
-              {s < 3 && <div className={`h-0.5 w-12 ${step > s ? "bg-primary" : "bg-muted"}`} />}
+              {s < 3 && (
+                <div className={`h-0.5 w-12 ${step > s ? "bg-primary" : "bg-muted"}`} />
+              )}
             </div>
           ))}
           <span className="ml-4 text-sm text-muted-foreground">
@@ -97,175 +195,337 @@ export default function OnboardingPage() {
 
         {/* Step 1: API Keys */}
         {step === 1 && (
-          <Card className="p-6 space-y-6">
-            <div>
-              <h1 className="text-2xl font-bold">Connect your AI services</h1>
-              <p className="text-muted-foreground mt-1">
-                Your keys stay on your device. We never store or see them.
-              </p>
-            </div>
-
-            <div className="grid gap-6 md:grid-cols-2">
-              {/* Gemini */}
-              <div className="space-y-3 p-4 border rounded-lg">
-                <div className="flex items-center justify-between">
-                  <Label className="font-semibold">Gemini AI</Label>
-                  <Badge variant="secondary">Free</Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">Powers job scoring & cover letters</p>
-                <a
-                  href="https://aistudio.google.com/apikey"
-                  target="_blank"
-                  rel="noopener"
-                  className="text-xs text-primary hover:underline flex items-center gap-1"
-                >
-                  Get a free key <ExternalLink className="w-3 h-3" />
-                </a>
-                <Input
-                  type="password"
-                  placeholder="Paste your Gemini API key"
-                  value={geminiKey}
-                  onChange={(e) => { setGeminiKey(e.target.value); setGeminiStatus("idle"); }}
-                  onBlur={handleValidateGemini}
-                />
-                <div className="h-5 flex items-center gap-1 text-xs">
-                  {geminiStatus === "validating" && <><Loader2 className="w-3 h-3 animate-spin" /> Validating...</>}
-                  {geminiStatus === "valid" && <><CheckCircle className="w-3 h-3 text-green-500" /> Ready</>}
-                  {geminiStatus === "invalid" && <><XCircle className="w-3 h-3 text-red-500" /> {geminiError}</>}
-                </div>
-              </div>
-
-              {/* Apify */}
-              <div className="space-y-3 p-4 border rounded-lg">
-                <div className="flex items-center justify-between">
-                  <Label className="font-semibold">Apify</Label>
-                  <Badge variant="secondary">~$0.01/search</Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">Scrapes LinkedIn, Indeed, Glassdoor, Naukri</p>
-                <a
-                  href="https://console.apify.com/account/integrations"
-                  target="_blank"
-                  rel="noopener"
-                  className="text-xs text-primary hover:underline flex items-center gap-1"
-                >
-                  Get your API token <ExternalLink className="w-3 h-3" />
-                </a>
-                <Input
-                  type="password"
-                  placeholder="Paste your Apify API token"
-                  value={apifyKey}
-                  onChange={(e) => { setApifyKey(e.target.value); setApifyStatus("idle"); }}
-                  onBlur={handleValidateApify}
-                />
-                <div className="h-5 flex items-center gap-1 text-xs">
-                  {apifyStatus === "validating" && <><Loader2 className="w-3 h-3 animate-spin" /> Validating...</>}
-                  {apifyStatus === "valid" && <><CheckCircle className="w-3 h-3 text-green-500" /> Ready</>}
-                  {apifyStatus === "invalid" && <><XCircle className="w-3 h-3 text-red-500" /> {apifyError}</>}
-                </div>
-                <p className="text-[10px] text-muted-foreground">
-                  We don&apos;t charge you. Apify bills your account directly. Most users spend &lt;$1/month.
+          <Card className="border border-border/50 bg-background/90 backdrop-blur-sm shadow-sm hover:shadow-md transition-shadow duration-200">
+            <div className="p-6 space-y-6">
+              <div>
+                <h1 className="text-2xl font-bold text-foreground">
+                  Connect your AI services
+                </h1>
+                <p className="text-muted-foreground mt-1">
+                  Your keys stay on your device. We never store or see them.
                 </p>
               </div>
-            </div>
 
-            <Separator />
+              <div className="grid gap-6 md:grid-cols-2">
+                {/* Gemini */}
+                <div className="space-y-3 p-4 border border-border/20 rounded-lg bg-background/50 hover:bg-background/60 transition-colors duration-200">
+                  <div className="flex items-center justify-between">
+                    <Label className="font-semibold text-foreground">Gemini AI</Label>
+                    <Badge variant="secondary">Free</Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Powers job scoring & cover letters
+                  </p>
+                  <a
+                    href="https://aistudio.google.com/apikey"
+                    target="_blank"
+                    rel="noopener"
+                    className="text-xs text-primary hover:text-primary/80 flex items-center gap-1 transition-colors duration-200"
+                  >
+                    Get a free key <ExternalLink className="w-3 h-3" />
+                  </a>
+                  <Input
+                    type="password"
+                    placeholder="Paste your Gemini API key"
+                    value={geminiKey}
+                    onChange={(e) => {
+                      setGeminiKey(e.target.value);
+                      setGeminiStatus("idle");
+                    }}
+                    onBlur={handleValidateGemini}
+                    className="bg-background/30 border border-border/30 hover:border-primary/40 focus:border-primary focus:ring-primary/20 focus:ring-2 text-sm font-medium"
+                  />
+                  <div className="h-5 flex items-center gap-1 text-xs">
+                    {geminiStatus === "validating" && (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span className="ml-1">Validating...</span>
+                      </>
+                    )}
+                    {geminiStatus === "valid" && (
+                      <>
+                        <CheckCircle className="w-3 h-3 text-green-500" />
+                        <span className="ml-1">Ready</span>
+                      </>
+                    )}
+                    {geminiStatus === "invalid" && (
+                      <>
+                        <XCircle className="w-3 h-3 text-red-500" />
+                        <span className="ml-1">{geminiError}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
 
-            <div className="flex items-center justify-between">
-              <Button variant="ghost" onClick={handleSkipKeys}>
-                Skip for now (demo mode)
-              </Button>
-              <Button
-                onClick={handleKeysNext}
-                disabled={!geminiKey.trim() || !apifyKey.trim()}
-              >
-                Next: Upload Resume →
-              </Button>
+                {/* Apify */}
+                <div className="space-y-3 p-4 border border-border/20 rounded-lg bg-background/50 hover:bg-background/60 transition-colors duration-200">
+                  <div className="flex items-center justify-between">
+                    <Label className="font-semibold text-foreground">Apify</Label>
+                    <Badge variant="secondary">~$0.01/search</Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Scrapes LinkedIn, Indeed, Glassdoor, Naukri
+                  </p>
+                  <a
+                    href="https://console.apify.com/account/integrations"
+                    target="_blank"
+                    rel="noopener"
+                    className="text-xs text-primary hover:text-primary/80 flex items-center gap-1 transition-colors duration-200"
+                  >
+                    Get your API token <ExternalLink className="w-3 h-3" />
+                  </a>
+                  <Input
+                    type="password"
+                    placeholder="Paste your Apify API token"
+                    value={apifyKey}
+                    onChange={(e) => {
+                      setApifyKey(e.target.value);
+                      setApifyStatus("idle");
+                    }}
+                    onBlur={handleValidateApify}
+                    className="bg-background/30 border border-border/30 hover:border-primary/40 focus:border-primary focus:ring-primary/20 focus:ring-2 text-sm font-medium"
+                  />
+                  <div className="h-5 flex items-center gap-1 text-xs">
+                    {apifyStatus === "validating" && (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span className="ml-1">Validating...</span>
+                      </>
+                    )}
+                    {apifyStatus === "valid" && (
+                      <>
+                        <CheckCircle className="w-3 h-3 text-green-500" />
+                        <span className="ml-1">Ready</span>
+                      </> // Fixed: Added missing closing parenthesis
+                    )}
+                    {apifyStatus === "invalid" && (
+                      <>
+                        <XCircle className="w-3 h-3 text-red-500" />
+                        <span className="ml-1">{apifyError}</span>
+                      </> // Fixed: Added missing closing parenthesis
+                    )}
+                  </div>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  We don&apos;t charge you. Apify bills your account directly. Most users spend {"<"}$1/month{">"}
+                </p>
+              </div>
+
+              <Separator className="my-6 border-border/30" />
+
+              <div className="flex items-center justify-between">
+                <Button
+                  variant="ghost"
+                  onClick={handleSkipKeys}
+                  className="hover:bg-muted/50 transition-colors duration-200 text-sm font-medium"
+                >
+                  Skip for now (demo mode)
+                </Button>
+                <Button
+                  onClick={handleKeysNext}
+                  disabled={!geminiKey.trim() || !apifyKey.trim()}
+                  className="bg-primary hover:bg-primary/90 focus:ring-primary/30 active:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 text-sm font-medium px-6 py-2"
+                >
+                  Next: Upload Resume →
+                </Button>
+              </div>
             </div>
           </Card>
         )}
 
         {/* Step 2: Resume */}
         {step === 2 && (
-          <Card className="p-6 space-y-6">
-            <div>
-              <h1 className="text-2xl font-bold">Add your resume</h1>
-              <p className="text-muted-foreground mt-1">
-                AI extracts your skills, target titles, and search terms from this.
-              </p>
-            </div>
+          <Card className="border border-border/50 bg-background/90 backdrop-blur-sm shadow-sm hover:shadow-md transition-shadow duration-200">
+            <div className="p-6 space-y-6">
+              <div>
+                <h1 className="text-2xl font-bold text-foreground">
+                  Add your resume
+                </h1>
+                <p className="text-muted-foreground mt-1">
+                  AI extracts your skills, target titles, and search terms from this.
+                </p>
+              </div>
 
-            <div className="space-y-3">
-              <Label>Paste your resume (plain text)</Label>
-              <textarea
-                className="w-full h-64 p-3 border rounded-lg bg-background text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-primary"
-                placeholder="Paste your resume here...&#10;&#10;Name&#10;Title | Location | email@example.com&#10;&#10;SUMMARY&#10;...&#10;&#10;EXPERIENCE&#10;..."
-                value={resume}
-                onChange={(e) => setResume(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                {resume.length > 0 ? `${resume.length} characters` : "Tip: Plain text works best. Copy from your .txt resume file."}
-              </p>
-            </div>
+              <div className="space-y-4">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  className="hidden"
+                  accept=".txt,.pdf"
+                  onChange={async (e) => {
+                    if (e.target.files?.length) {
+                      await handleFileDrop(e.target.files);
+                    }
+                  }}
+                />
+                <div
+                  className={`border-2 border-dashed rounded-lg p-6 text-center hover:border-primary/20 transition-colors duration-200 cursor-pointer ${
+                    dragOver ? "border-primary bg-primary/5" : ""
+                  }`}
+                  onClick={triggerFileInput}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragOver(true);
+                  }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    setDragOver(false);
+                    await handleFileDrop(e.dataTransfer.files);
+                  }}
+                >
+                  {!file ? (
+                    <>
+                      <Upload className="mx-auto h-10 w-10 mb-3 text-primary/80" />
+                      <p className="text-sm font-medium text-foreground">
+                        Drag & drop your resume here, or click to select
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Supported: PDF, TXT (text extraction for PDF requires backend)
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <FileText className="h-5 w-5 text-muted-foreground" />
+                          <div>
+                            <p className="font-medium text-foreground">{file.name}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {Math.round(file.size / 1024)} KB
+                            </p>
+                          </div>
+                        </div>
+                        <Button variant="ghost" size="sm" onClick={removeFile} className="hover:bg-muted/50 transition-colors duration-200">
+                          <XCircle className="h-4 w-4 text-muted-foreground hover:text-red-500" />
+                        </Button>
+                      </div>
+                      {file.type === "text/plain" && (
+                        <div className="mt-4">
+                          <p className="text-xs text-muted-foreground mb-1">Preview:</p>
+                          <textarea
+                            readOnly
+                            className="w-full h-24 p-2 border border-border/30 rounded bg-background/50 text-sm focus:border-primary/40 focus:ring-primary/20"
+                            value={fileTextPreview}
+                          />
+                        </div>
+                      )}
+                      {file.type !== "text/plain" && ( // Fixed: Corrected operator precedence
+                        <p className="text-xs text-muted-foreground mt-2">
+                          File preview not available for{" "}
+                          {file.type.split("/")[0] || file.type}. Please paste text if needed.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
 
-            <div className="flex items-center justify-between">
-              <Button variant="ghost" onClick={() => setStep(1)}>← Back</Button>
-              <Button onClick={handleResumeNext} disabled={resume.length < 100}>
-                <Sparkles className="w-4 h-4 mr-2" /> Extract Profile
-              </Button>
+                <Label className="flex items-center gap-2 text-foreground">
+                  Or paste resume text
+                  <Upload className="h-4 w-4 text-muted-foreground" />
+                </Label>
+                <textarea
+                  className="w-full h-24 p-3 border border-border/30 rounded-lg bg-background/50 text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 placeholder:text-muted-foreground/50"
+                  placeholder="Paste your resume here..."
+                  value={resume}
+                  onChange={(e) => setResume(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {resume.length > 0 ? `${resume.length} characters` : "Tip: Plain text works best. PDF text extraction coming soon."}
+                </p>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <Button variant="ghost" onClick={() => setStep(1)} className="hover:bg-muted/50 transition-colors duration-200 text-sm font-medium flex-1">
+                  ← Back
+                </Button>
+                <Button
+                  onClick={handleExtractProfile}
+                  disabled={
+                    extractionStatus === "extracting" ||
+                    (!file && resume.trim().length < 100)
+                  }
+                  className="flex-1 bg-primary hover:bg-primary/90 focus:ring-primary/30 active:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 text-sm font-medium px-4 py-2 flex items-center justify-center gap-2"
+                >
+                  {extractionStatus === "extracting" ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span className="ml-1">Extracting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="h-4 w-4" />
+                      <span className="ml-1">Extract Profile</span>
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              {extractError && (
+                <p className="mt-2 text-sm text-red-500">{extractError}</p>
+              )}
             </div>
           </Card>
         )}
 
         {/* Step 3: Profile Preview */}
         {step === 3 && profile && (
-          <Card className="p-6 space-y-6">
-            <div>
-              <h1 className="text-2xl font-bold">Your profile</h1>
-              <p className="text-muted-foreground mt-1">
-                This is what we extracted from your resume. Looks right?
-              </p>
-            </div>
+          <Card className="border border-border/50 bg-background/90 backdrop-blur-sm shadow-sm hover:shadow-md transition-shadow duration-200">
+            <div className="p-6 space-y-6">
+              <div>
+                <h1 className="text-2xl font-bold text-foreground">
+                  Your profile
+                </h1>
+                <p className="text-muted-foreground mt-1">
+                  This is what we extracted from your resume. Looks right?
+                </p>
+              </div>
 
-            <div className="space-y-4">
-              <div>
-                <Label className="text-xs text-muted-foreground">Anchor Skill (highest priority)</Label>
-                <p className="text-lg font-semibold">{profile.anchor_skill}</p>
-              </div>
-              <div>
-                <Label className="text-xs text-muted-foreground">Primary Skills</Label>
-                <div className="flex flex-wrap gap-2 mt-1">
-                  {profile.primary_skills.map((s: string) => (
-                    <Badge key={s} variant="outline">{s}</Badge>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <Label className="text-xs text-muted-foreground">Search Terms</Label>
-                <ul className="mt-1 text-sm space-y-1">
-                  {profile.search_terms.map((t: string) => (
-                    <li key={t} className="text-muted-foreground">• {t}</li>
-                  ))}
-                </ul>
-              </div>
-              <div className="flex gap-8">
+              <div className="space-y-4">
                 <div>
-                  <Label className="text-xs text-muted-foreground">Location</Label>
-                  <p className="text-sm">{profile.location}</p>
+                  <Label className="text-xs text-muted-foreground">Anchor Skill (highest priority)</Label>
+                  <p className="text-lg font-semibold text-foreground">{profile.anchor_skill}</p>
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Seniority</Label>
-                  <p className="text-sm capitalize">{profile.seniority}</p>
+                  <Label className="text-xs text-muted-foreground">Primary Skills</Label>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {profile.primary_skills.map((s: string) => (
+                      <Badge key={s} variant="outline" className="border-border/30 hover:border-primary/40 transition-colors duration-200">
+                        {s}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Search Terms</Label>
+                  <ul className="mt-1 text-sm space-y-1">
+                    {profile.search_terms.map((t: string) => (
+                      <li key={t} className="text-muted-foreground">• {t}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="flex gap-8">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Location</Label>
+                    <p className="text-sm text-foreground">{profile.location}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Seniority</Label>
+                    <p className="text-sm capitalize text-foreground">{profile.seniority}</p>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <Separator />
+              <Separator className="my-6 border-border/30" />
 
-            <div className="flex items-center justify-between">
-              <Button variant="ghost" onClick={() => setStep(2)}>← Back</Button>
-              <Button onClick={handleComplete}>
-                Looks good — Start Searching →
-              </Button>
+              <div className="flex items-center justify-between gap-3">
+                <Button variant="ghost" onClick={() => setStep(2)} className="hover:bg-muted/50 transition-colors duration-200 text-sm font-medium flex-1">
+                  ← Back
+                </Button>
+                <Button onClick={handleComplete} className="flex-1 bg-primary hover:bg-primary/90 focus:ring-primary/30 active:bg-primary/80 transition-all duration-200 text-sm font-medium px-4 py-2">
+                  Looks good — Start Searching →
+                </Button>
+              </div>
             </div>
           </Card>
         )}

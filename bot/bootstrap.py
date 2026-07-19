@@ -102,11 +102,31 @@ Rules for primary_skills:
 - Do NOT include the anchor_skill here (it's separate)
 - These are the other strong skills that complement the anchor
 
+Rules for seniority:
+- Determine seniority STRICTLY from total years of full-time professional experience
+- Do NOT inflate seniority based on project complexity, tech stack breadth, or responsibilities
+- Use this mapping:
+    0-1 years → "junior"
+    2-3 years → "mid"
+    4-6 years → "senior"
+    7-9 years → "lead"
+    10-12 years → "staff"
+    13+ years → "principal" or "manager"
+- Count only full-time employment duration (not internships, academic projects, or side projects)
+- A candidate with 1 year of experience is JUNIOR regardless of how impressive their work is
+
+Rules for target_titles:
+- Target titles MUST be realistic for the candidate's seniority level
+- A junior (0-1 years) should target: "Software Engineer", "Backend Developer", "Junior Developer"
+- A mid (2-3 years) should target: "Software Engineer", "Backend Engineer", "Full Stack Developer"
+- Do NOT suggest "Technical Lead", "Staff Engineer", "Architect" for candidates with < 5 years experience
+
 Rules for search_terms:
-- Each query should be a natural search string like "Technical Lead Ruby on Rails India"
+- Each query should be a natural search string like "Software Engineer Ruby on Rails India"
 - At least 2 of the 5 queries MUST include the anchor_skill
 - Include at least one location-specific query and one remote-friendly query
 - Base them on the candidate's anchor_skill, primary skills, and target titles
+- Search terms MUST match the candidate's actual seniority — do NOT search for "Lead" or "Staff" roles if the candidate has < 5 years experience
 
 Rules for keywords:
 - The anchor_skill (and common abbreviations) MUST be first in the list
