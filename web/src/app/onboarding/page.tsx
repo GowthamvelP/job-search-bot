@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,6 +20,7 @@ import {
 } from "lucide-react";
 import { saveKeys, validateGeminiKey, validateApifyKey, getKeys } from "@/lib/keys";
 import { callTool } from "@/lib/mcp-client";
+import { saveProfile } from "@/lib/profile";
 
 type KeyStatus = "idle" | "validating" | "valid" | "invalid";
 
@@ -161,37 +163,44 @@ export default function OnboardingPage() {
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
-      <div className="w-full max-w-2xl">
-        {/* Progress */}
-        <div className="flex items-center gap-2 mb-8">
-          <div className="flex items-center gap-4 mb-2">
-            <Sparkles className="w-6 h-6 text-primary" />
-            <h2 className="text-sm font-medium text-muted-foreground tracking-wide uppercase">
-              JobAgent Setup
-            </h2>
+      <div className="w-full max-w-xl">
+        {/* Header + Stepper */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500/20 to-indigo-500/20 mb-4">
+            <Sparkles className="w-6 h-6 text-violet-400" />
           </div>
+          <h1 className="text-2xl font-bold">Set up JobAgent</h1>
+          <p className="text-sm text-muted-foreground mt-1">3 quick steps to start finding your next role</p>
         </div>
-        <div className="flex items-center gap-2 mb-8">
-          {[1, 2, 3].map((s) => (
-            <div key={s} className="flex items-center gap-2">
-              <div
-                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
-                  step >= s ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-                }`}
-              >
-                {step > s ? "✓" : s}
+
+        {/* Step indicators */}
+        <div className="flex items-center justify-center gap-2 mb-8">
+          {[
+            { n: 1, label: "Keys" },
+            { n: 2, label: "Resume" },
+            { n: 3, label: "Profile" },
+          ].map(({ n, label }) => (
+            <div key={n} className="flex items-center gap-2">
+              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium transition-all duration-300 ${
+                step > n ? "bg-violet-500 text-white" : step === n ? "bg-foreground text-background ring-2 ring-foreground/20 ring-offset-2 ring-offset-background" : "bg-muted text-muted-foreground"
+              }`}>
+                {step > n ? <CheckCircle className="w-3.5 h-3.5" /> : n}
               </div>
-              {s < 3 && (
-                <div className={`h-0.5 w-12 ${step > s ? "bg-primary" : "bg-muted"}`} />
-              )}
+              <span className={`text-xs hidden sm:inline ${step === n ? "text-foreground font-medium" : "text-muted-foreground"}`}>{label}</span>
+              {n < 3 && <div className={`w-8 h-px ${step > n ? "bg-violet-500" : "bg-border"}`} />}
             </div>
           ))}
-          <span className="ml-4 text-sm text-muted-foreground">
-            {step === 1 && "API Keys"}
-            {step === 2 && "Resume"}
-            {step === 3 && "Profile"}
-          </span>
         </div>
+
+        {/* Step content with animation */}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={step}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ duration: 0.2 }}
+          >
 
         {/* Step 1: API Keys */}
         {step === 1 && (
@@ -522,13 +531,15 @@ export default function OnboardingPage() {
                 <Button variant="ghost" onClick={() => setStep(2)} className="hover:bg-muted/50 transition-colors duration-200 text-sm font-medium flex-1">
                   ← Back
                 </Button>
-                <Button onClick={handleComplete} className="flex-1 bg-primary hover:bg-primary/90 focus:ring-primary/30 active:bg-primary/80 transition-all duration-200 text-sm font-medium px-4 py-2">
+                <Button onClick={handleComplete} className="flex-1 bg-violet-600 hover:bg-violet-700 text-white transition-all duration-200 text-sm font-medium px-4 py-2">
                   Looks good — Start Searching →
                 </Button>
               </div>
             </div>
           </Card>
         )}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
   );
