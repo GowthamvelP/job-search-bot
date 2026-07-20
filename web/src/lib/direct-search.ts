@@ -70,7 +70,7 @@ async function fetchLeverJobs(company: Company): Promise<JobResult[]> {
 
 export async function searchCompanies(
   companies: Company[],
-  options: { query?: string; remoteOnly?: boolean } = {}
+  options: { query?: string; remoteOnly?: boolean; keywords?: string[] } = {}
 ): Promise<JobResult[]> {
   // Fetch all companies in parallel
   const results = await Promise.all(
@@ -90,6 +90,15 @@ export async function searchCompanies(
         j.company.toLowerCase().includes(q) ||
         j.location.toLowerCase().includes(q)
     );
+  }
+
+  // Filter by profile keywords (only show relevant roles)
+  if (options.keywords && options.keywords.length > 0 && !options.query?.trim()) {
+    const kws = options.keywords.map((k) => k.toLowerCase());
+    allJobs = allJobs.filter((j) => {
+      const title = j.title.toLowerCase();
+      return kws.some((kw) => title.includes(kw));
+    });
   }
 
   // Filter remote
