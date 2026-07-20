@@ -80,6 +80,7 @@ import tools
 
 mcp = FastMCP("job-search-bot", host=HOST, port=PORT)
 logger.info("FastMCP HTTP instance created, registering tools...")
+logger.info("FastMCP HTTP instance created, registering tools...")
 
 
 def _extract_keys_from_ctx(ctx: Context) -> dict:
@@ -270,6 +271,8 @@ def _keepalive_loop():
 
 if __name__ == "__main__":
     import threading
+    import uvicorn
+    from starlette.middleware.cors import CORSMiddleware
 
     transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
     logger.info(f"Starting MCP HTTP server on {HOST}:{PORT} (transport: {transport})")
@@ -281,8 +284,20 @@ if __name__ == "__main__":
     if KEEPALIVE_ENABLED:
         threading.Thread(target=_keepalive_loop, daemon=True).start()
 
+    # Get the Starlette app from FastMCP and add CORS
+    app = mcp.streamable_http_app()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["mcp-session-id"],
+    )
+    logger.info(f"CORS middleware added for: {ALLOWED_ORIGINS}")
+
     try:
-        mcp.run(transport=transport)
+        uvicorn.run(app, host=HOST, port=PORT)
     except KeyboardInterrupt:
         logger.info("HTTP server stopped by user")
     except Exception as e:

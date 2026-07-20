@@ -138,7 +138,7 @@ export default function OnboardingPage() {
             >
               Upload new resume
             </Button>
-            <Button onClick={() => router.push("/discover")} className="cursor-pointer">
+            <Button onClick={() => router.push("/discover?autoSearch=true")} className="cursor-pointer">
               Go to Discover
             </Button>
           </div>
@@ -364,7 +364,7 @@ ${resumeText}`;
 
   function handleComplete() {
     // Profile is already saved in handleExtractProfile via saveProfile()
-    router.push("/discover");
+    router.push("/discover?autoSearch=true");
   }
 
   return (

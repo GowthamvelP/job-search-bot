@@ -148,6 +148,12 @@ function DiscoverPage() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(-1);
 
+  // Always get the latest version of selectedJob from jobs array (scores update async)
+  const currentJob = useMemo(() => {
+    if (!selectedJob) return null;
+    return jobs.find(j => j.id === selectedJob.id) || selectedJob;
+  }, [selectedJob, jobs]);
+
   // Cover letter modal
   const [coverLetterJob, setCoverLetterJob] = useState<Job | null>(null);
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
@@ -198,6 +204,14 @@ function DiscoverPage() {
   useEffect(() => {
     if (isDemo && !searched) { setJobs(DEMO_JOBS as Job[]); setSearched(true); }
   }, [isDemo, searched]);
+
+  // Auto-search when navigated from onboarding
+  const autoSearch = searchParams.get("autoSearch") === "true";
+  useEffect(() => {
+    if (autoSearch && !searched && !loading && selectedCompanies.length > 0) {
+      handleSearch();
+    }
+  }, [autoSearch]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -590,7 +604,7 @@ Respond with valid JSON only:
 
         {/* Detail pane */}
         <AnimatePresence>
-          {selectedJob && (
+          {currentJob && (
             <motion.div
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
@@ -601,10 +615,10 @@ Respond with valid JSON only:
                 {/* Header */}
                 <div className="flex items-start justify-between mb-4">
                   <div>
-                    <h2 className="text-xl font-semibold">{selectedJob.title}</h2>
+                    <h2 className="text-xl font-semibold">{currentJob.title}</h2>
                     <p className="text-sm text-muted-foreground mt-0.5 flex items-center gap-2">
                       <Building2 className="w-3.5 h-3.5" />
-                      {selectedJob.company}
+                      {currentJob.company}
                     </p>
                   </div>
                   <button onClick={() => { setSelectedJob(null); setSelectedIndex(-1); }}
@@ -615,45 +629,45 @@ Respond with valid JSON only:
 
                 {/* Meta */}
                 <div className="flex flex-wrap gap-2 mb-5">
-                  {selectedJob.location && (
+                  {currentJob.location && (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded">
-                      <MapPin className="w-3 h-3" />{selectedJob.location}
+                      <MapPin className="w-3 h-3" />{currentJob.location}
                     </span>
                   )}
-                  {selectedJob.posted_date && (
+                  {currentJob.posted_date && (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded">
-                      <Calendar className="w-3 h-3" />{selectedJob.posted_date}
+                      <Calendar className="w-3 h-3" />{currentJob.posted_date}
                     </span>
                   )}
-                  {selectedJob.is_remote && <Badge variant="outline" className="text-[10px] border-emerald-500/30 text-emerald-400">Remote</Badge>}
-                  {selectedJob.visa_sponsorship && <Badge variant="outline" className="text-[10px] border-blue-500/30 text-blue-400">Visa</Badge>}
-                  <SourceBadge source={selectedJob.source} />
+                  {currentJob.is_remote && <Badge variant="outline" className="text-[10px] border-emerald-500/30 text-emerald-400">Remote</Badge>}
+                  {currentJob.visa_sponsorship && <Badge variant="outline" className="text-[10px] border-blue-500/30 text-blue-400">Visa</Badge>}
+                  <SourceBadge source={currentJob.source} />
                 </div>
 
                 {/* Score section */}
                 <div className="mb-5 p-4 rounded-lg bg-muted/30 border border-border/50">
-                  {selectedJob.score ? (
+                  {currentJob.score ? (
                     <div className="flex items-center gap-4">
-                      <ScoreRing score={selectedJob.score} size="lg" scoring={scoringIds.has(selectedJob.id)} />
+                      <ScoreRing score={currentJob.score} size="lg" scoring={scoringIds.has(currentJob.id)} />
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-medium">Match Score</span>
-                          {selectedJob.skill_bonus ? (
+                          {currentJob.skill_bonus ? (
                             <span className="text-[10px] text-emerald-400 flex items-center gap-0.5">
-                              <Zap className="w-3 h-3" />+{selectedJob.skill_bonus}
+                              <Zap className="w-3 h-3" />+{currentJob.skill_bonus}
                             </span>
                           ) : null}
                         </div>
-                        {selectedJob.reasoning && (
-                          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{selectedJob.reasoning}</p>
+                        {currentJob.reasoning && (
+                          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{currentJob.reasoning}</p>
                         )}
                       </div>
                     </div>
                   ) : (
                     <div className="flex items-center gap-3">
-                      <Button variant="outline" size="sm" onClick={() => handleScoreJob(selectedJob)}
-                        disabled={scoringIds.has(selectedJob.id)} className="h-8">
-                        {scoringIds.has(selectedJob.id) ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
+                      <Button variant="outline" size="sm" onClick={() => handleScoreJob(currentJob)}
+                        disabled={scoringIds.has(currentJob.id)} className="h-8">
+                        {scoringIds.has(currentJob.id) ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
                         Score this job
                       </Button>
                       <span className="text-[10px] text-muted-foreground">Uses Gemini to evaluate fit against your resume</span>
@@ -663,37 +677,37 @@ Respond with valid JSON only:
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 mb-5">
-                  <a href={selectedJob.url} target="_blank" rel="noopener">
+                  <a href={currentJob.url} target="_blank" rel="noopener">
                     <Button size="sm" className="h-8 bg-violet-600 hover:bg-violet-700 text-white">
                       <ExternalLink className="w-3.5 h-3.5 mr-1.5" />Apply
                     </Button>
                   </a>
                   <Button variant="outline" size="sm" className="h-8"
-                    onClick={() => { setCoverLetterJob(selectedJob); setCoverLetterOpen(true); }}>
+                    onClick={() => { setCoverLetterJob(currentJob); setCoverLetterOpen(true); }}>
                     <FileText className="w-3.5 h-3.5 mr-1.5" />Cover Letter
                   </Button>
                   <Button variant="outline" size="sm" className="h-8"
-                    onClick={() => handleBookmark(selectedJob)}
-                    disabled={bookmarkedIds.has(selectedJob.id)}>
-                    <Bookmark className={`w-3.5 h-3.5 mr-1.5 ${bookmarkedIds.has(selectedJob.id) ? "fill-current text-violet-400" : ""}`} />
-                    {bookmarkedIds.has(selectedJob.id) ? "Saved" : "Save"}
+                    onClick={() => handleBookmark(currentJob)}
+                    disabled={bookmarkedIds.has(currentJob.id)}>
+                    <Bookmark className={`w-3.5 h-3.5 mr-1.5 ${bookmarkedIds.has(currentJob.id) ? "fill-current text-violet-400" : ""}`} />
+                    {bookmarkedIds.has(currentJob.id) ? "Saved" : "Save"}
                   </Button>
                 </div>
 
                 <Separator className="mb-5" />
 
                 {/* Job description */}
-                {selectedJob.text ? (
+                {currentJob.text ? (
                   <div>
                     <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Description</h4>
                     <div className="text-sm text-foreground/80 whitespace-pre-wrap leading-relaxed">
-                      {selectedJob.text}
+                      {currentJob.text}
                     </div>
                   </div>
                 ) : (
                   <p className="text-sm text-muted-foreground italic">
                     No description available.{" "}
-                    <a href={selectedJob.url} target="_blank" rel="noopener" className="text-violet-400 hover:underline">
+                    <a href={currentJob.url} target="_blank" rel="noopener" className="text-violet-400 hover:underline">
                       View on source
                     </a>
                   </p>
