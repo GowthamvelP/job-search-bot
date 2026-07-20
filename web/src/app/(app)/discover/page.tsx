@@ -54,12 +54,37 @@ const STATIC_COUNTRIES = ["India", "United States", "United Kingdom", "Canada", 
 const STATIC_SOURCES = ["linkedin", "indeed", "glassdoor", "naukri", "greenhouse", "lever"];
 
 // --- Score ring component ---
-function ScoreRing({ score, size = "sm" }: { score?: number; size?: "sm" | "lg" }) {
-  if (!score) return null;
+function ScoreRing({ score, size = "sm", scoring = false }: { score?: number; size?: "sm" | "lg"; scoring?: boolean }) {
   const dim = size === "lg" ? 48 : 32;
   const stroke = size === "lg" ? 4 : 3;
   const radius = (dim - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
+
+  // Scoring in progress — pulsing ring
+  if (scoring) {
+    return (
+      <div className="relative flex items-center justify-center animate-pulse" style={{ width: dim, height: dim }}>
+        <svg width={dim} height={dim} className="-rotate-90">
+          <circle cx={dim/2} cy={dim/2} r={radius} fill="none" stroke="currentColor" strokeWidth={stroke} className="text-violet-500/40" strokeDasharray="4 4" />
+        </svg>
+        <Loader2 className="absolute w-3 h-3 animate-spin text-violet-400" />
+      </div>
+    );
+  }
+
+  // Unscored — dashed ring
+  if (!score) {
+    return (
+      <div className="relative flex items-center justify-center" style={{ width: dim, height: dim }}>
+        <svg width={dim} height={dim} className="-rotate-90">
+          <circle cx={dim/2} cy={dim/2} r={radius} fill="none" stroke="currentColor" strokeWidth={stroke} className="text-border/40" strokeDasharray="3 3" />
+        </svg>
+        <span className="absolute text-[9px] text-muted-foreground">?</span>
+      </div>
+    );
+  }
+
+  // Scored — filled ring
   const progress = (score / 100) * circumference;
   const color = score >= 80 ? "#22c55e" : score >= 60 ? "#eab308" : "#f87171";
 
@@ -129,6 +154,7 @@ function DiscoverPage() {
 
   // Scoring state
   const [scoringId, setScoringId] = useState<string | null>(null);
+  const [scoringIds, setScoringIds] = useState<Set<string>>(new Set());
   const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(new Set());
 
   // Filters
@@ -157,7 +183,11 @@ function DiscoverPage() {
         const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - parseInt(filters.freshness));
         if (new Date(job.posted_date) < cutoff) return false;
       }
-      if (filters.minScore !== "all" && (!job.score || job.score < parseInt(filters.minScore))) return false;
+      // Score filter — show scored jobs that pass + all unscored jobs
+      if (filters.minScore !== "all") {
+        const min = parseInt(filters.minScore);
+        if (job.score !== undefined && job.score < min) return false;
+      }
       if (filters.source !== "all" && job.source !== filters.source) return false;
       if (filters.visaOnly && !job.visa_sponsorship) return false;
       return true;
@@ -204,8 +234,24 @@ function DiscoverPage() {
     setLoading(true); setError("");
     try {
       if (selectedCompanies.length > 0) {
-        const results = await searchCompanies(selectedCompanies, { query, remoteOnly: filters.jobType === "remote" });
+        // Get profile keywords for relevancy filtering
+        const profile = getProfile();
+        const keywords = profile?.keywords || profile?.primary_skills || [];
+        // Include anchor skill and target titles as keywords too
+        const allKeywords = [
+          ...(profile?.anchor_skill ? [profile.anchor_skill] : []),
+          ...keywords,
+          ...(profile?.target_titles || []),
+          "engineer", "developer", "software", "backend", "frontend", "full stack", "fullstack",
+        ];
+        const results = await searchCompanies(selectedCompanies, {
+          query,
+          remoteOnly: filters.jobType === "remote",
+          keywords: allKeywords,
+        });
         setJobs(results as Job[]);
+        // Auto-score top 5 in background
+        setTimeout(() => autoScoreTop(results as Job[]), 100);
       } else {
         const keys = getKeys();
         if (!keys.apify) { setError("Select companies above (free) or add Apify key for broad search."); setLoading(false); return; }
@@ -213,27 +259,124 @@ function DiscoverPage() {
         let jobList = result.jobs || [];
         if (query.trim()) { const q = query.toLowerCase(); jobList = jobList.filter((j: Job) => j.title.toLowerCase().includes(q) || j.company.toLowerCase().includes(q)); }
         setJobs(jobList);
+        setTimeout(() => autoScoreTop(jobList), 100);
       }
       setSearched(true);
     } catch (e: any) { setError(e.message || "Search failed."); }
     finally { setLoading(false); }
   }
 
+  // Auto-score top 5 jobs after search results load
+  async function autoScoreTop(jobsToScore: Job[]) {
+    const keys = getKeys();
+    if (!keys.gemini) return;
+
+    const top5 = jobsToScore.slice(0, 5);
+    const ids = new Set(top5.map(j => j.id));
+    setScoringIds(ids);
+
+    for (const job of top5) {
+      try {
+        // Try MCP first
+        let scored = false;
+        try {
+          const result = await callTool("score_job", {
+            title: job.title, company: job.company, url: job.url,
+            text: job.text || `${job.title} at ${job.company}`,
+            location: job.location || "", is_remote: job.is_remote || false,
+          }, keys);
+          if (!result.error && result.final_score !== undefined) {
+            setJobs(prev => prev.map(j => j.id === job.id ? { ...j, score: result.final_score, skill_bonus: result.skill_bonus, reasoning: result.reasoning } : j));
+            scored = true;
+          }
+        } catch {}
+
+        // Fallback: direct Gemini
+        if (!scored && keys.gemini) {
+          const prompt = `Score this job 0-100 for fit. Consider title, tech stack, seniority, location.\n\nJob: ${job.title} at ${job.company}\nLocation: ${job.location || "N/A"}\nRemote: ${job.is_remote ? "Yes" : "No"}\nDescription: ${(job.text || "").slice(0, 1500)}\n\nRespond JSON only: {"score": <0-100>, "reasoning": "<1-2 sentences>"}`;
+          const models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+          for (const model of models) {
+            try {
+              const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${keys.gemini}`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+              });
+              if (!resp.ok) { if (resp.status === 429) continue; break; }
+              const data = await resp.json();
+              let raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+              raw = raw.trim().replace(/^```json\s*/, "").replace(/^```\s*/, "").replace(/```\s*$/, "").trim();
+              const parsed = JSON.parse(raw);
+              setJobs(prev => prev.map(j => j.id === job.id ? { ...j, score: Math.min(parsed.score || 0, 100), reasoning: parsed.reasoning || "" } : j));
+              break;
+            } catch { continue; }
+          }
+        }
+      } catch {}
+      finally {
+        setScoringIds(prev => { const next = new Set(prev); next.delete(job.id); return next; });
+      }
+    }
+  }
+
   async function handleScoreJob(job: Job) {
-    setScoringId(job.id);
+    setScoringIds(prev => new Set([...prev, job.id]));
     try {
       const keys = getKeys();
-      const result = await callTool("score_job", {
-        title: job.title, company: job.company, url: job.url,
-        text: job.text || `${job.title} at ${job.company}`,
-        location: job.location || "", is_remote: job.is_remote || false,
-      }, keys);
-      if (!result.error) {
-        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, score: result.final_score, skill_bonus: result.skill_bonus, reasoning: result.reasoning } : j));
-        if (selectedJob?.id === job.id) setSelectedJob({ ...job, score: result.final_score, skill_bonus: result.skill_bonus, reasoning: result.reasoning });
+
+      // Try MCP server first
+      try {
+        const result = await callTool("score_job", {
+          title: job.title, company: job.company, url: job.url,
+          text: job.text || `${job.title} at ${job.company}`,
+          location: job.location || "", is_remote: job.is_remote || false,
+        }, keys);
+        if (!result.error) {
+          setJobs(prev => prev.map(j => j.id === job.id ? { ...j, score: result.final_score, skill_bonus: result.skill_bonus, reasoning: result.reasoning } : j));
+          if (selectedJob?.id === job.id) setSelectedJob({ ...job, score: result.final_score, skill_bonus: result.skill_bonus, reasoning: result.reasoning });
+          return;
+        }
+      } catch {
+        // MCP not available, fall through to direct Gemini
+      }
+
+      // Fallback: direct Gemini scoring
+      if (!keys.gemini) return;
+
+      const prompt = `Score this job 0-100 for fit against the candidate profile. Consider title alignment, tech stack, seniority, and location.
+
+Job: ${job.title} at ${job.company}
+Location: ${job.location || "Not specified"}
+Remote: ${job.is_remote ? "Yes" : "No"}
+Description: ${(job.text || "").slice(0, 2000)}
+
+Respond with valid JSON only:
+{"score": <0-100>, "reasoning": "<2 sentences>"}`;
+
+      const models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+      let data: any = null;
+      for (const model of models) {
+        const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${keys.gemini}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+        });
+        if (resp.ok) { data = await resp.json(); break; }
+        if (resp.status === 429) continue;
+        break;
+      }
+
+      if (data) {
+        let raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        raw = raw.trim().replace(/^```json\s*/, "").replace(/^```\s*/, "").replace(/```\s*$/, "").trim();
+        try {
+          const parsed = JSON.parse(raw);
+          const score = Math.min(parsed.score || 0, 100);
+          const reasoning = parsed.reasoning || "";
+          setJobs(prev => prev.map(j => j.id === job.id ? { ...j, score, reasoning } : j));
+          if (selectedJob?.id === job.id) setSelectedJob({ ...job, score, reasoning });
+        } catch {}
       }
     } catch {}
-    finally { setScoringId(null); }
+    finally { setScoringIds(prev => { const next = new Set(prev); next.delete(job.id); return next; }); }
   }
 
   async function handleBookmark(job: Job) {
@@ -407,9 +550,15 @@ function DiscoverPage() {
           ) : (
             <div className="divide-y divide-border/30">
               {/* Result count */}
-              <div className="px-4 py-2 text-[11px] text-muted-foreground sticky top-0 bg-background/80 backdrop-blur-sm z-10">
-                {filteredJobs.length} result{filteredJobs.length !== 1 ? "s" : ""}
-                {filteredJobs.length !== jobs.length && ` of ${jobs.length}`}
+              <div className="px-4 py-2 text-[11px] text-muted-foreground sticky top-0 bg-background/80 backdrop-blur-sm z-10 flex items-center gap-2">
+                <span>{filteredJobs.length} result{filteredJobs.length !== 1 ? "s" : ""}</span>
+                {filteredJobs.length !== jobs.length && <span>(of {jobs.length})</span>}
+                {filteredJobs.some(j => j.score) && (
+                  <span className="text-emerald-400">{filteredJobs.filter(j => j.score).length} scored</span>
+                )}
+                {scoringIds.size > 0 && (
+                  <span className="flex items-center gap-1 text-violet-400"><Loader2 className="w-3 h-3 animate-spin" />scoring...</span>
+                )}
               </div>
 
               {/* Job rows */}
@@ -422,7 +571,7 @@ function DiscoverPage() {
                   }`}
                 >
                   <div className="flex items-start gap-3">
-                    <ScoreRing score={job.score} />
+                    <ScoreRing score={job.score} scoring={scoringIds.has(job.id)} />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate">{job.title}</p>
                       <p className="text-xs text-muted-foreground truncate">{job.company} · {job.location}</p>
@@ -485,7 +634,7 @@ function DiscoverPage() {
                 <div className="mb-5 p-4 rounded-lg bg-muted/30 border border-border/50">
                   {selectedJob.score ? (
                     <div className="flex items-center gap-4">
-                      <ScoreRing score={selectedJob.score} size="lg" />
+                      <ScoreRing score={selectedJob.score} size="lg" scoring={scoringIds.has(selectedJob.id)} />
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-medium">Match Score</span>
@@ -503,8 +652,8 @@ function DiscoverPage() {
                   ) : (
                     <div className="flex items-center gap-3">
                       <Button variant="outline" size="sm" onClick={() => handleScoreJob(selectedJob)}
-                        disabled={scoringId === selectedJob.id} className="h-8">
-                        {scoringId === selectedJob.id ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
+                        disabled={scoringIds.has(selectedJob.id)} className="h-8">
+                        {scoringIds.has(selectedJob.id) ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
                         Score this job
                       </Button>
                       <span className="text-[10px] text-muted-foreground">Uses Gemini to evaluate fit against your resume</span>
